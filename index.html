@@ -3,85 +3,118 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ELF Magnetometer Logger</title>
+    <title>Magnetometer Distortion Monitor</title>
     <style>
-        body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
-        .container { max-width: 500px; margin: 0 auto; border: 1px solid #0f0; padding: 20px; }
-        button { background: #0f0; color: #111; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
-        .data { font-size: 1.2rem; margin: 20px 0; }
+        body { font-family: monospace; background: #121212; color: #33ff33; padding: 15px; margin: 0; }
+        .wrapper { max-width: 600px; margin: 0 auto; border: 1px solid #33ff33; padding: 20px; box-sizing: border-box; }
+        button { background: #33ff33; color: #121212; border: none; padding: 12px 24px; font-weight: bold; font-family: monospace; cursor: pointer; width: 100%; font-size: 1rem; }
+        .metric { font-size: 1.1rem; margin: 10px 0; display: flex; justify-content: space-between; }
+        canvas { width: 100%; height: 200px; background: #1a1a1a; border: 1px solid #33ff33; margin-top: 15px; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h2>Pixel 9a Magnetometer Interface</h2>
-    <p>Status: <span id="status">Awaiting Activation</span></p>
-    <button id="startBtn">Initialize Sensor</button>
-    
-    <div class="data">
-        <div>X-Axis: <span id="magX">0.00</span> µT</div>
-        <div>Y-Axis: <span id="magY">0.00</span> µT</div>
-        <div>Z-Axis: <span id="magZ">0.00</span> µT</div>
-        <hr style="border-color: #0f0;">
-        <div><strong>Total Field (B): <span id="magTotal">0.00</span> µT</strong></div>
+<div class="wrapper">
+    <h2>Magnetic Field Deviation Tracker</h2>
+    <p>Status: <span id="status">Ready to initialize</span></p>
+    <button id="startBtn">Start Telemetry Stream</button>
+
+    <div style="margin-top: 20px;">
+        <div class="metric">Alpha (Compass Heading): <span id="valAlpha">0.0°</span></div>
+        <div class="metric">Beta (Pitch): <span id="valBeta">0.0°</span></div>
+        <div class="metric">Gamma (Roll): <span id="valGamma">0.0°</span></div>
     </div>
+
+    <canvas id="graphCanvas"></canvas>
 </div>
 
 <script>
 const startBtn = document.getElementById('startBtn');
 const statusText = document.getElementById('status');
+const canvas = document.getElementById('graphCanvas');
+const ctx = canvas.getContext('2d');
 
-startBtn.addEventListener('click', async () => {
-    if (!('Magnetometer' in window)) {
-        statusText.innerText = "Error: Magnetometer API not supported. Check chrome://flags.";
-        return;
-    }
+// Configure canvas display resolution
+canvas.width = canvas.clientWidth;
+canvas.height = canvas.clientHeight;
 
-    try {
-        // Request explicit sensor access permission
-        const permission = await navigator.permissions.query({ name: 'magnetometer' });
-        
-        if (permission.state === 'denied') {
-            statusText.innerText = "Permission Denied by User/OS.";
-            return;
-        }
+let dataHistory = [];
+const maxDataPoints = canvas.width;
+let currentAlpha = 0;
 
-        initSensor();
-    } catch (err) {
-        statusText.innerText = `Setup Error: ${err.message}`;
+startBtn.addEventListener('click', () => {
+    // Check for the absolute orientation event which tracks the physical magnetic north
+    if ('ondeviceorientationabsolute' in window) {
+        window.addEventListener('deviceorientationabsolute', handleOrientation);
+        statusText.innerText = "Streaming Absolute Magnetometer Data";
+        startBtn.style.display = 'none';
+        drawGraph();
+    } else if ('ondeviceorientation' in window) {
+        // Fallback to relative orientation if absolute is stripped by firmware
+        window.addEventListener('deviceorientation', handleOrientation);
+        statusText.innerText = "Streaming Relative Data (Compass fallback)";
+        startBtn.style.display = 'none';
+        drawGraph();
+    } else {
+        statusText.innerText = "Error: Device Orientation not supported by browser.";
     }
 });
 
-function initSensor() {
-    // Configure at 50Hz sampling rate
-    const sensor = new Magnetometer({ frequency: 50 });
+function handleOrientation(event) {
+    // alpha is the rotation around the z-axis (0 to 360 degrees) relative to magnetic north
+    currentAlpha = event.alpha || 0;
+    
+    document.getElementById('valAlpha').innerText = currentAlpha.toFixed(2) + '°';
+    document.getElementById('valBeta').innerText = (event.beta || 0).toFixed(2) + '°';
+    document.getElementById('valGamma').innerText = (event.gamma || 0).toFixed(2) + '°';
 
-    sensor.addEventListener('reading', () => {
-        const x = sensor.x;
-        const y = sensor.y;
-        const z = sensor.z;
-        
-        // Calculate scalar total field strength: B = sqrt(x² + y² + z²)
-        const totalField = Math.sqrt(x*x + y*y + z*z);
-
-        document.getElementById('magX').innerText = x.toFixed(3);
-        document.getElementById('magY').innerText = y.toFixed(3);
-        document.getElementById('magZ').innerText = z.toFixed(3);
-        document.getElementById('magTotal').innerText = totalField.toFixed(3);
-        statusText.innerText = "Streaming live data...";
-    });
-
-    sensor.addEventListener('error', event => {
-        if (event.error.name === 'NotReadableError') {
-            statusText.innerText = "Sensor blocked or device busy.";
-        } else {
-            statusText.innerText = `Sensor Error: ${event.error.name}`;
-        }
-    });
-
-    sensor.start();
-    startBtn.style.display = 'none';
+    // Push alpha to a rolling history array for real-time visualization
+    dataHistory.push(currentAlpha);
+    if (dataHistory.length > maxDataPoints) {
+        dataHistory.shift();
+    }
 }
+
+function drawGraph() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw background grid lines
+    ctx.strokeStyle = '#224422';
+    ctx.lineWidth = 1;
+    for(let i = 0; i < canvas.height; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, i);
+        ctx.lineTo(canvas.width, i);
+        ctx.stroke();
+    }
+
+    if (dataHistory.length > 1) {
+        ctx.strokeStyle = '#33ff33';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        for (let i = 0; i < dataHistory.length; i++) {
+            const x = i;
+            // Map 0-360 degrees across the canvas height canvas
+            const y = canvas.height - ((dataHistory[i] / 360) * canvas.height);
+            
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    requestAnimationFrame(drawGraph);
+}
+
+// Adjust canvas sizing dynamically on screen rotation
+window.addEventListener('resize', () => {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+});
 </script>
 </body>
 </html>
