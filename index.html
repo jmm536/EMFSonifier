@@ -2,115 +2,92 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Network Baro-Sonifier</title>
+    <title>Barometric Web Command Station</title>
     <style>
-        body { background: #111; color: #fff; font-family: monospace; text-align: center; padding: 30px; }
-        .config-box { background: #222; border: 1px solid #444; padding: 20px; border-radius: 6px; max-width: 400px; margin: 0 auto 20px auto; }
-        input { background: #333; color: #fff; border: 1px solid #555; padding: 10px; font-size: 16px; width: 80%; text-align: center; border-radius: 4px; margin-top: 10px; }
-        button { background: #00ff66; color: #000; border: none; padding: 15px 30px; font-size: 16px; font-weight: bold; margin: 10px; cursor: pointer; border-radius: 4px; }
-        button:disabled { background: #444; color: #888; cursor: not-allowed; }
-        #recordBtn { background: #fff; }
-        #status { margin-top: 20px; color: #aaa; font-size: 16px; }
+        body { background: #050505; color: #00ff66; font-family: monospace; padding: 30px; text-align: center; }
+        .dashboard { background: #111; border: 1px solid #333; padding: 25px; border-radius: 8px; max-width: 500px; margin: 0 auto 20px auto; }
+        input { background: #222; color: #fff; border: 1px solid #444; padding: 10px; width: 80%; text-align: center; font-size: 16px; margin-bottom: 15px; }
+        button { background: #00ff66; color: #000; font-weight: bold; border: none; padding: 15px 30px; margin: 5px; cursor: pointer; border-radius: 4px; }
+        #recordBtn { background: #fff; color: #000; }
+        #status { margin-top: 15px; color: #888; }
     </style>
 </head>
 <body>
 
-    <h1>Barometric Network Sonifier</h1>
+    <h1>Barometric Command Station</h1>
     
-    <div class="config-box">
-        <label for="ipInput">Enter Phyphox Device IP & Port:</label><br>
-        <input type="text" id="ipInput" value="192.168.1.50:8000" placeholder="e.g., 192.168.1.50:8000">
+    <div class="dashboard">
+        <label>Target Phone Phyphox IP:</label><br>
+        <input type="text" id="ipAddress" value="192.168.1.50:8000">
+        <div id="telemetry">Pressure: -- hPa</div>
     </div>
 
-    <button id="startBtn">START AUDIO ENGINE</button>
-    <button id="recordBtn" disabled>RECORD</button>
-    
-    <div id="status">System offline. Input Phyphox link and initialize.</div>
+    <button id="connectBtn">INITIALIZE STREAM</button>
+    <button id="recordBtn" disabled>RECORD AUDIO</button>
+    <div id="status">Awaiting network initialization...</div>
 
     <script>
         let audioCtx, oscillator, gainNode, mediaRecorder;
         let recordedChunks = [];
         let isRecording = false;
         let baseline = null;
-        let pollingInterval = null;
+        let pollTimer = null;
 
-        const startBtn = document.getElementById('startBtn');
+        const connectBtn = document.getElementById('connectBtn');
         const recordBtn = document.getElementById('recordBtn');
         const statusDiv = document.getElementById('status');
-        const ipInput = document.getElementById('ipInput');
+        const telemetry = document.getElementById('telemetry');
+        const ipInput = document.getElementById('ipAddress');
 
-        startBtn.addEventListener('click', () => {
+        connectBtn.addEventListener('click', () => {
             if (audioCtx) return;
 
-            const targetIP = ipInput.value.trim();
-            if (!targetIP) {
-                statusDiv.innerText = "Error: Valid Phyphox network IP address required.";
-                return;
-            }
-
-            // Initialize Web Audio API nodes
+            // Start Audio Engine
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
-            
-            // Route to media stream destination for local recording capture
             const dest = audioCtx.createMediaStreamDestination();
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
             
+            oscillator.type = 'sine';
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
             gainNode.connect(dest);
             oscillator.start();
-            
-            // Set up recording mechanics
+
+            // Setup Recording Container
             mediaRecorder = new MediaRecorder(dest.stream);
             mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-            mediaRecorder.onstop = saveRecording;
+            mediaRecorder.onstop = exportAudio;
 
-            const targetURL = `http://${targetIP}/json?full=true`;
-            statusDiv.innerText = "Connecting to Phyphox data stream...";
+            const targetURL = `http://${ipInput.value.trim()}/json?full=true`;
+            statusDiv.innerText = "Querying phone data stream...";
 
-            // Begin real-time sensor ingestion loop (~30Hz polling frequency)
-            pollingInterval = setInterval(async () => {
+            // Ingestion loop running at 30Hz
+            pollTimer = setInterval(async () => {
                 try {
-                    const response = await fetch(targetURL, { mode: 'cors' });
-                    const data = await response.json();
-                    
-                    // Parse the absolute latest record entry from the active barometric buffer
-                    const pressureBuffer = data.buffer.pressure.buffer;
-                    const pressure = pressureBuffer[pressureBuffer.length - 1];
+                    const res = await fetch(targetURL);
+                    const data = await res.json();
+                    const buffer = data.buffer.pressure.buffer;
+                    const pressure = buffer[buffer.length - 1];
 
-                    if (pressure === undefined) {
-                        statusDiv.innerText = "Connected, but streaming buffer is empty. Make sure the Pressure experiment is running in Phyphox.";
-                        return;
+                    if (pressure) {
+                        if (baseline === null) baseline = pressure;
+                        const delta = pressure - baseline;
+                        
+                        telemetry.innerText = `Base: ${baseline.toFixed(2)} hPa | Live: ${pressure.toFixed(3)} hPa`;
+                        
+                        // Sonification calculation: map pressure changes to pitch
+                        const targetFreq = 440 - (delta * 1200);
+                        oscillator.frequency.setTargetAtTime(Math.max(60, Math.min(1600, targetFreq)), audioCtx.currentTime, 0.02);
                     }
-                    
-                    // Establish baseline ceiling on first data return
-                    if (baseline === null) {
-                        baseline = pressure;
-                    }
-                    
-                    const delta = pressure - baseline;
-                    statusDiv.innerText = `Base: ${baseline.toFixed(2)} hPa | Abs: ${pressure.toFixed(3)} hPa | Delta: ${delta.toFixed(3)} hPa`;
-                    
-                    // Map tiny physical pressure changes to audible audio slides
-                    // Raising the phone decreases air pressure, which raises the frequency pitch
-                    const targetFreq = 440 - (delta * 1200);
-                    
-                    // Constrain frequency to stable ranges (80Hz - 1500Hz)
-                    const boundedFreq = Math.max(80, Math.min(1500, targetFreq));
-                    oscillator.frequency.setTargetAtTime(boundedFreq, audioCtx.currentTime, 0.02);
-                    
                 } catch (err) {
-                    statusDiv.innerText = `Network Error: Failed to fetch data. Check your IP address and network link.`;
+                    statusDiv.innerText = "Connection lost. Verifying network route...";
                 }
             }, 33);
 
-            startBtn.innerText = "ENGINE LIVE";
-            startBtn.style.background = "#444";
-            startBtn.style.color = "#888";
+            connectBtn.innerText = "LINK ACTIVE";
+            connectBtn.style.background = "#222";
+            connectBtn.style.color = "#555";
             recordBtn.disabled = false;
         });
 
@@ -121,22 +98,20 @@
                 isRecording = true;
                 recordBtn.innerText = "STOP & SAVE";
                 recordBtn.style.background = "#ff3333";
-                recordBtn.style.color = "#fff";
             } else {
                 mediaRecorder.stop();
                 isRecording = false;
-                recordBtn.innerText = "RECORD";
+                recordBtn.innerText = "RECORD AUDIO";
                 recordBtn.style.background = "#fff";
-                recordBtn.style.color = "#000";
             }
         });
 
-        function saveRecording() {
+        function exportAudio() {
             const blob = new Blob(recordedChunks, { type: 'audio/webm' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `baro_data_capture_${Date.now()}.webm`;
+            a.download = `baro_session_${Date.now()}.webm`;
             a.click();
         }
     </script>
