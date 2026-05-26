@@ -66,10 +66,26 @@
             font-size: 1rem;
             cursor: pointer;
             transition: background 0.2s;
+            margin-bottom: 10px;
         }
 
         button:active {
             background-color: #00ccaa;
+        }
+
+        #errorLog {
+            width: 100%;
+            max-width: 500px;
+            background-color: #2a1414;
+            border: 1px solid #662222;
+            color: #ff9999;
+            padding: 15px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            margin-bottom: 15px;
+            display: none;
+            box-sizing: border-box;
+            line-height: 1.4;
         }
 
         .readout {
@@ -105,8 +121,11 @@
 
     <h1>EMF Hardware Monitor</h1>
 
+    <div id="errorLog"></div>
+
     <div class="controls">
         <button id="startBtn">Start Audio & Sensor</button>
+        <button id="demoBtn" style="background-color: #333; color: #aaa; display: none;">Run Framework Demo Mode</button>
         
         <div class="control-group" style="margin-top: 15px;">
             <label for="dcOffset">DC Offset Adjustment (µT): <span id="offsetVal">0</span></label>
@@ -123,8 +142,8 @@
     
     <div class="axes">
         <span>X: <span id="xDisplay">0</span> µT</span>
-        <span>Y: <span id="yDisplay">0 µT</span></span>
-        <span>Z: <span id="zDisplay">0 µT</span></span>
+        <span>Y: <span id="yDisplay">0</span> µT</span>
+        <span>Z: <span id="zDisplay">0</span> µT</span>
     </div>
 
     <canvas id="graphCanvas"></canvas>
@@ -135,8 +154,12 @@
         let oscillator = null;
         let gainNode = null;
         let isRunning = false;
+        let isDemoMode = false;
+        let demoInterval = null;
         
         const startBtn = document.getElementById('startBtn');
+        const demoBtn = document.getElementById('demoBtn');
+        const errorLog = document.getElementById('errorLog');
         const dcOffsetInput = document.getElementById('dcOffset');
         const offsetValDisplay = document.getElementById('offsetVal');
         const audioGainInput = document.getElementById('audioGain');
@@ -157,7 +180,22 @@
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        // UI Listeners
+        // Self-test environment constraints immediately on startup
+        window.addEventListener('DOMContentLoaded', () => {
+            if (!('Magnetometer' in window)) {
+                errorLog.style.display = "block";
+                errorLog.innerHTML = `<strong>⚠️ Hardware Sensor API Restrictions Active:</strong><br><br>
+                Your browser is withholding raw magnetometer access. To map direct environmental EMF from a webpage, satisfy these requirements:<br><br>
+                1. <strong>Secure Origin (HTTPS):</strong> This application must run via an <code>https://</code> URL or <code>http://localhost</code>.<br>
+                2. <strong>Enable Browser Flag (Android Chrome):</strong> Open a tab to <code>chrome://flags/#enable-generic-sensor-extra-classes</code>, change it to <strong>Enabled</strong>, and tap <strong>Relaunch</strong>.<br>
+                3. <strong>Hardware Isolation:</strong> Note that iOS Safari blocks raw web-based magnetometers globally. Android Chrome or Chromium-based browsers with the system flag turned on are required.`;
+                
+                // Show fallback demo option so the UI, graphs, and audio synthesis engine can still be tested
+                demoBtn.style.display = "block";
+            }
+        });
+
+        // UI Parameter Adjustments
         dcOffsetInput.addEventListener('input', (e) => {
             offsetValDisplay.textContent = e.target.value;
         });
@@ -173,11 +211,18 @@
                 stopApp();
                 return;
             }
-            await startApp();
+            await startApp(false);
         });
 
-        async function startApp() {
-            // 1. Initialize Web Audio Context
+        demoBtn.addEventListener('click', async () => {
+            if (isRunning) {
+                stopApp();
+                return;
+            }
+            await startApp(true);
+        });
+
+        async function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
@@ -195,35 +240,61 @@
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
             oscillator.start();
+        }
 
-            // 2. Access True Hardware Magnetometer
+        async function startApp(useDemo) {
+            await initAudio();
+
+            // Fallback Engine: Evaluates exact UI graph/waveform responsiveness with mock variables 
+            if (useDemo) {
+                isDemoMode = true;
+                isRunning = true;
+                startBtn.disabled = true;
+                demoBtn.textContent = "Stop Demo Mode";
+                demoBtn.style.backgroundColor = "#ff4444";
+                demoBtn.style.color = "#fff";
+                
+                let simulatedBase = 45; // Average baseline microtesla field strength of Earth
+                demoInterval = setInterval(() => {
+                    simulatedBase += (Math.random() - 0.5) * 12;
+                    simulatedBase = Math.max(10, Math.min(180, simulatedBase));
+                    handleEMFData(
+                        simulatedBase * 0.4 + (Math.random() - 0.5) * 4,
+                        simulatedBase * 0.3 + (Math.random() - 0.5) * 4,
+                        simulatedBase * 0.5 + (Math.random() - 0.5) * 4
+                    );
+                }, 50);
+                
+                drawGraph();
+                return;
+            }
+
+            // Real Hardware Engine Route
             if ('Magnetometer' in window) {
                 try {
-                    // Query Permissions API explicitly if the browser supports it for sensors
                     if (navigator.permissions) {
                         const status = await navigator.permissions.query({ name: 'magnetometer' });
                         if (status.state === 'denied') {
-                            alert('Permission to access the hardware magnetometer was denied.');
+                            alert('Sensor denied. Check site-specific browser settings.');
                             stopApp();
                             return;
                         }
                     }
 
-                    // Request uncalibrated/raw data stream at 20Hz
-                    sensor = new Magnetometer({ frequency: 20 });
+                    sensor = new Magnetometer({ frequency: 30 });
                     
                     sensor.addEventListener('reading', () => {
-                        // Pass real microtesla hardware values directly
                         handleEMFData(sensor.x, sensor.y, sensor.z);
                     });
 
                     sensor.addEventListener('error', event => {
-                        alert(`Sensor hardware error: ${event.error.message}`);
+                        alert(`Sensor error: ${event.error.message}`);
                         stopApp();
                     });
 
                     sensor.start();
                     isRunning = true;
+                    demoBtn.disabled = true;
                     startBtn.textContent = "Stop Audio & Sensor";
                     startBtn.style.backgroundColor = "#ff4444";
                     startBtn.style.color = "#fff";
@@ -231,65 +302,68 @@
                     drawGraph();
                     
                 } catch (error) {
-                    alert(`Could not initiate sensor: ${error.message}`);
+                    alert(`Hardware connection failed: ${error.message}`);
                     stopApp();
                 }
             } else {
-                alert("Magnetometer API is missing. To fix this:\n1. Use Android Chrome on HTTPS.\n2. Go to chrome://flags\n3. Enable 'Generic Sensor Extra Classes'\n4. Relaunch Chrome.");
+                alert("Magnetometer unavailable. Please refer to the diagnostic parameters at the top of the screen.");
                 stopApp();
             }
         }
 
         function stopApp() {
-            if (sensor) {
-                sensor.stop();
-            }
+            if (sensor) { sensor.stop(); }
+            if (demoInterval) { clearInterval(demoInterval); }
             if (oscillator) {
                 try { oscillator.stop(); } catch(e) {}
                 oscillator.disconnect();
             }
             isRunning = false;
+            isDemoMode = false;
+            startBtn.disabled = false;
+            demoBtn.disabled = false;
             startBtn.textContent = "Start Audio & Sensor";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#121212";
+            demoBtn.textContent = "Run Framework Demo Mode";
+            demoBtn.style.backgroundColor = "#333";
+            demoBtn.style.color = "#aaa";
         }
 
         function handleEMFData(x, y, z) {
-            // Compute real physical magnetic magnitude: Vector sum of X, Y, Z coordinates
+            // True physical magnitude calculation: Vector sum √(x² + y² + z²)
             const absoluteTesla = Math.sqrt(x * x + y * y + z * z);
             
-            // Apply Manual DC Offset
+            // Manual baseline adjustment control
             const dcOffset = parseFloat(dcOffsetInput.value);
             const adjustedEMF = Math.max(0, absoluteTesla + dcOffset);
 
-            // Print the authentic sensor metrics
+            // Print true hardware axes
             magDisplay.textContent = adjustedEMF.toFixed(2);
             xDisplay.textContent = x.toFixed(1);
             yDisplay.textContent = y.toFixed(1);
             zDisplay.textContent = z.toFixed(1);
 
-            // Feed raw values to sliding graph control
+            // Buffer rolling timeline array
             dataPoints.push(adjustedEMF);
             dataPoints.shift();
 
-            // Real-Time Waveform Conversion
+            // Real-time audio waveform adjustments
             if (oscillator && audioCtx) {
-                // Base 150Hz tone, pitch shifts dynamically by 4Hz per Microtesla variation
-                const targetFrequency = 150 + (adjustedEMF * 4);
-                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2000);
-                
-                // Audio parameter smoothing to translate spikes into smooth waveform tones
+                const targetFrequency = 150 + (adjustedEMF * 4.2);
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2200);
+                // setTargetAtTime avoids audio artifacts during micro-fluctuations
                 oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
             }
         }
 
-        // Live Graphic Control Canvas Render
+        // Rolling Timeline Graph Setup
         function drawGraph() {
             if (!isRunning) return;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Grid guides
+            // Background Grid Guidelines
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 1;
             for(let i = 1; i < 4; i++) {
@@ -300,16 +374,15 @@
                 ctx.stroke();
             }
 
-            // Trendline tracing absolute hardware EMF data
-            ctx.strokeStyle = '#00ffcc';
+            // Waveform Trace Configuration
+            ctx.strokeStyle = isDemoMode ? '#ffaa00' : '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
 
             const sliceWidth = canvas.width / dataPoints.length;
             let x = 0;
 
-            // Auto-scaling limit to prevent data clipping out of frame
-            const maxVal = Math.max(...dataPoints, 100); 
+            const maxVal = Math.max(...dataPoints, 120); 
 
             for (let i = 0; i < dataPoints.length; i++) {
                 const yNorm = 1 - (dataPoints[i] / maxVal);
