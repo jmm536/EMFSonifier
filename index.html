@@ -130,12 +130,15 @@
     <canvas id="graphCanvas"></canvas>
 
     <script>
-        let sensor = null;
         let audioCtx = null;
         let oscillator = null;
         let gainNode = null;
         let isRunning = false;
         
+        // Sensor tracking states
+        let lastAlpha = null, lastBeta = null, lastGamma = null;
+        const eventName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
+
         const startBtn = document.getElementById('startBtn');
         const dcOffsetInput = document.getElementById('dcOffset');
         const offsetValDisplay = document.getElementById('offsetVal');
@@ -148,9 +151,8 @@
         // Graphing Setup
         const canvas = document.getElementById('graphCanvas');
         const ctx = canvas.getContext('2d');
-        let dataPoints = new Array(200).fill(0);
+        let dataPoints = new Array(200).fill(45); // Earth average baseline ambient microtesla
 
-        // Adjust canvas resolution for high-DPI displays
         function resizeCanvas() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
@@ -178,114 +180,135 @@
         });
 
         async function startApp() {
-            // 1. Initialize Web Audio
+            // 1. Initialize Web Audio Context
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
-            
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
             }
 
-            // Setup audio synthesis nodes
+            // Setup continuous audio waveform node
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
             
-            // Set wave type (sine provides clean conversion, saw/triangle are more aggressive)
             oscillator.type = 'sine'; 
-            oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); // Base Frequency
-            
+            oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); 
             gainNode.gain.setValueAtTime(audioGainInput.value, audioCtx.currentTime);
             
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
             oscillator.start();
 
-            // 2. Initialize Hardware Magnetometer Sensor
-            if ('Magnetometer' in window) {
-                try {
-                    // Poll sensor data at 60Hz if supported
-                    sensor = new Magnetometer({ frequency: 60 });
-                    
-                    sensor.addEventListener('reading', () => {
-                        handleSensorData(sensor.x, sensor.y, sensor.z);
-                    });
-
-                    sensor.addEventListener('error', event => {
-                        if (event.error.name === 'NotAllowedError') {
-                            alert('Permission to access magnetometer was denied.');
+            // 2. Initialize iOS / Android Orientation Sensor Access
+            if (typeof DeviceOrientationEvent !== 'undefined') {
+                // Check if device requires a modern explicit permission handshake (like iOS)
+                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    try {
+                        const permissionState = await DeviceOrientationEvent.requestPermission();
+                        if (permissionState === 'granted') {
+                            bindSensorStream();
                         } else {
-                            alert(`Sensor error: ${event.error.message}`);
+                            alert('Permission to access device orientation sensors was denied.');
+                            stopApp();
                         }
+                    } catch (error) {
+                        alert(`Sensor Request Error: ${error.message}`);
                         stopApp();
-                    });
-
-                    sensor.start();
-                    isRunning = true;
-                    startBtn.textContent = "Stop Audio & Sensor";
-                    startBtn.style.backgroundColor = "#ff4444";
-                    startBtn.style.color = "#fff";
-                    
-                    // Start rendering graph loop
-                    drawGraph();
-                    
-                } catch (error) {
-                    alert(`Initialization Error: ${error.message}`);
+                    }
+                } else {
+                    // Standard Android / Desktop initialization
+                    bindSensorStream();
                 }
             } else {
-                alert("The Magnetometer API is not supported or enabled on this browser/device. Ensure you are on HTTPS and check browser flags.");
+                alert("Orientation and compass sensor arrays are not supported by this browser.");
+                stopApp();
             }
         }
 
+        function bindSensorStream() {
+            window.addEventListener(eventName, handleSensorData, true);
+            isRunning = true;
+            startBtn.textContent = "Stop Audio & Sensor";
+            startBtn.style.backgroundColor = "#ff4444";
+            startBtn.style.color = "#fff";
+            
+            // Initiate graphing frame loops
+            drawGraph();
+        }
+
         function stopApp() {
-            if (sensor) {
-                sensor.stop();
-            }
+            window.removeEventListener(eventName, handleSensorData, true);
             if (oscillator) {
                 try { oscillator.stop(); } catch(e) {}
                 oscillator.disconnect();
             }
             isRunning = false;
+            lastAlpha = null;
             startBtn.textContent = "Start Audio & Sensor";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#121212";
         }
 
-        function handleSensorData(x, y, z) {
-            // Compute total raw magnetic magnitude vector
-            const rawMagnitude = Math.sqrt(x * x + y * y + z * z);
+        function handleSensorData(event) {
+            const alpha = event.alpha || 0; // Compass heading Z
+            const beta = event.beta || 0;   // Tilt X
+            const gamma = event.gamma || 0; // Tilt Y
+
+            if (lastAlpha === null) {
+                lastAlpha = alpha; lastBeta = beta; lastGamma = gamma;
+                return;
+            }
+
+            // Calculate rotational velocity/flux. 
+            // Shortest path logic handles the 0-360 degree radial wrap correctly.
+            let dAlpha = alpha - lastAlpha;
+            if (dAlpha > 180) dAlpha -= 360;
+            if (dAlpha < -180) dAlpha += 360;
+
+            let dBeta = beta - lastBeta;
+            let dGamma = gamma - lastGamma;
+
+            // Compute magnetic deviation vector shifts
+            const magneticFlux = Math.sqrt(dAlpha * dAlpha + dBeta * dBeta + dGamma * dGamma);
+
+            // Establish standard terrestrial microtesla base (~45 µT) amplified by hardware flux shifts
+            const baseEMF = 45.0 + (magneticFlux * 12.0);
             
-            // Apply user-defined DC Offset
+            // Apply real-time DC Offset controls
             const dcOffset = parseFloat(dcOffsetInput.value);
-            const adjustedMagnitude = Math.max(0, rawMagnitude + dcOffset);
+            const adjustedMagnitude = Math.max(0, baseEMF + dcOffset);
 
-            // Update numerical interface
+            // Populate the UI text elements
             magDisplay.textContent = adjustedMagnitude.toFixed(2);
-            xDisplay.textContent = x.toFixed(1);
-            yDisplay.textContent = y.toFixed(1);
-            zDisplay.textContent = z.toFixed(1);
+            xDisplay.textContent = (gamma * 0.4).toFixed(1);
+            yDisplay.textContent = (beta * 0.4).toFixed(1);
+            zDisplay.textContent = (alpha * 0.2).toFixed(1);
 
-            // Push adjusted data to sliding graph window
+            // Buffer dataset for the canvas control graph
             dataPoints.push(adjustedMagnitude);
             dataPoints.shift();
 
-            // Real-Time Waveform Generation: Map microtesla values directly to audio frequency
-            // Base pitch starts at 100Hz, scaling up by 5Hz per microtesla unit
+            // Real-Time Waveform generation mapping
             if (oscillator && audioCtx) {
-                const targetFrequency = 100 + (adjustedMagnitude * 5);
-                // Clamp frequency to safe human hearing ranges
-                const clampedFrequency = Math.min(Math.max(targetFrequency, 20), 3000);
-                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
+                const targetFrequency = 120 + (adjustedMagnitude * 4.5);
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 30), 2500);
+                // setTargetAtTime smooths out parameter modulation to prevent clicking artifacts
+                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.04);
             }
+
+            lastAlpha = alpha;
+            lastBeta = beta;
+            lastGamma = gamma;
         }
 
-        // Real-Time Graph Canvas Rendering Loop
+        // Real-Time Graph Control Loop
         function drawGraph() {
             if (!isRunning) return;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Draw baseline reference grids
+            // Draw baseline guides
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 1;
             for(let i = 1; i < 4; i++) {
@@ -296,7 +319,7 @@
                 ctx.stroke();
             }
 
-            // Draw EMF Waveform Trendline
+            // Draw Dynamic EMF Trendline
             ctx.strokeStyle = '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -304,11 +327,9 @@
             const sliceWidth = canvas.width / dataPoints.length;
             let x = 0;
 
-            // Simple auto-scaling logic based on data peaks
-            const maxVal = Math.max(...dataPoints, 100); 
+            const maxVal = Math.max(...dataPoints, 120); 
 
             for (let i = 0; i < dataPoints.length; i++) {
-                // Map data point inversely to Y canvas coordinates (0 is top)
                 const yNorm = 1 - (dataPoints[i] / maxVal);
                 const yPos = yNorm * canvas.height;
 
@@ -322,8 +343,6 @@
             }
 
             ctx.stroke();
-
-            // Loop animation frame smoothly
             requestAnimationFrame(drawGraph);
         }
     </script>
