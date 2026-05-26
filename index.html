@@ -3,172 +3,329 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ELF Magnetometer Sonifier & Recorder</title>
+    <title>Real-Time EMF Monitor & Sonifier</title>
     <style>
-        body { font-family: monospace; background: #121212; color: #33ff33; padding: 15px; margin: 0; }
-        .wrapper { max-width: 600px; margin: 0 auto; border: 1px solid #33ff33; padding: 20px; box-sizing: border-box; }
-        .controls { display: flex; gap: 10px; margin-bottom: 15px; }
-        button { background: #33ff33; color: #121212; border: none; padding: 12px; font-weight: bold; font-family: monospace; cursor: pointer; flex: 1; font-size: 0.9rem; }
-        button:disabled { background: #114411; color: #555; cursor: not-allowed; }
-        .metric { font-size: 1.1rem; margin: 10px 0; display: flex; justify-content: space-between; }
-        canvas { width: 100%; height: 180px; background: #1a1a1a; border: 1px solid #33ff33; margin-top: 15px; }
-        #downloadLink { display: block; text-align: center; margin-top: 15px; color: #fff; font-weight: bold; text-decoration: underline; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            color: #00ffcc;
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            background-color: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 500px;
+            box-sizing: border-box;
+            margin-bottom: 15px;
+            border: 1px solid #333;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type="range"], input[type="number"] {
+            width: 100%;
+            background: #333;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 8px;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: #00ffcc;
+            color: #121212;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:active {
+            background-color: #00ccaa;
+        }
+
+        .readout {
+            font-size: 1.8rem;
+            font-family: monospace;
+            color: #00ffcc;
+            margin: 15px 0;
+            text-align: center;
+        }
+
+        .axes {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 500px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        canvas {
+            background-color: #000;
+            border: 1px solid #333;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 500px;
+            height: 200px;
+        }
     </style>
 </head>
 <body>
 
-<div class="wrapper">
-    <h2>Magnetic Sonification Tool</h2>
-    <p>Status: <span id="status">Awaiting Audio Initialization</span></p>
-    
+    <h1>EMF Real-Time Monitor</h1>
+
     <div class="controls">
-        <button id="startBtn">1. Initialize Sensor & Audio</button>
-        <button id="recordBtn" disabled>2. Start Recording</button>
-        <button id="stopBtn" disabled>3. Stop & Save</button>
+        <button id="startBtn">Start Audio & Sensor</button>
+        
+        <div class="control-group" style="margin-top: 15px;">
+            <label for="dcOffset">DC Offset Adjustment (µT): <span id="offsetVal">0</span></label>
+            <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
+        </div>
+
+        <div class="control-group">
+            <label for="audioGain">Audio Volume</label>
+            <input type="range" id="audioGain" min="0" max="1" value="0.5" step="0.05">
+        </div>
     </div>
 
-    <div>
-        <div class="metric">Alpha (Compass Heading): <span id="valAlpha">0.0°</span></div>
-        <div class="metric">Frequency Modulation: <span id="audioFreq">0 Hz</span></div>
+    <div class="readout"><span id="magDisplay">0.00</span> µT</div>
+    
+    <div class="axes">
+        <span>X: <span id="xDisplay">0</span></span>
+        <span>Y: <span id="yDisplay">0</span></span>
+        <span>Z: <span id="zDisplay">0</span></span>
     </div>
 
     <canvas id="graphCanvas"></canvas>
-    <a id="downloadLink" style="display: none;">Download Recorded Audio Session</a>
-</div>
 
-<script>
-let audioCtx = null;
-let oscillator = null;
-let mediaRecorder = null;
-let audioChunks = [];
-let streamDestination = null;
-
-const startBtn = document.getElementById('startBtn');
-const recordBtn = document.getElementById('recordBtn');
-const stopBtn = document.getElementById('stopBtn');
-const statusText = document.getElementById('status');
-const downloadLink = document.getElementById('downloadLink');
-
-const canvas = document.getElementById('graphCanvas');
-const ctx = canvas.getContext('2d');
-canvas.width = canvas.clientWidth;
-canvas.height = canvas.clientHeight;
-
-let dataHistory = [];
-const maxDataPoints = canvas.width;
-let currentAlpha = 0;
-
-// Step 1: Initialize Sensor and Synthesizer Web Audio Node
-startBtn.addEventListener('click', () => {
-    if ('ondeviceorientationabsolute' in window) {
-        window.addEventListener('deviceorientationabsolute', handleOrientation);
-        initAudioEngine();
-        statusText.innerText = "Sensor & Synth Active. Ready to record.";
-        startBtn.disabled = true;
-        recordBtn.disabled = false;
-        drawGraph();
-    } else {
-        statusText.innerText = "Error: Absolute orientation not supported.";
-    }
-});
-
-function initAudioEngine() {
-    // Instantiate audio context after user gesture interaction to bypass browser blocks
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    
-    // Create a virtual destination to pipe audio to the recorder
-    streamDestination = audioCtx.createMediaStreamDestination();
-    
-    oscillator = audioCtx.createOscillator();
-    oscillator.type = 'sine'; // Clean fundamental tone
-    oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); // Base Carrier: 220Hz
-    
-    // Route audio to device speakers AND virtual recorder stream simultaneously
-    oscillator.connect(audioCtx.destination);
-    oscillator.connect(streamDestination);
-    
-    oscillator.start();
-}
-
-function handleOrientation(event) {
-    currentAlpha = event.alpha || 0;
-    document.getElementById('valAlpha').innerText = currentAlpha.toFixed(2) + '°';
-
-    // Data Sonification: Map 0-360 degrees to a tightly controlled frequency offset (220Hz - 580Hz)
-    if (oscillator && audioCtx) {
-        const targetFrequency = 220 + (currentAlpha); 
-        oscillator.frequency.setTargetAtTime(targetFrequency, audioCtx.currentTime, 0.02);
-        document.getElementById('audioFreq').innerText = targetFrequency.toFixed(1) + ' Hz';
-    }
-
-    dataHistory.push(currentAlpha);
-    if (dataHistory.length > maxDataPoints) dataHistory.shift();
-}
-
-// Step 2: Initialize MediaRecorder Mapping
-recordBtn.addEventListener('click', () => {
-    audioChunks = []; // Clear previous buffer
-    
-    // Capture the stream from the web audio virtual node
-    mediaRecorder = new MediaRecorder(streamDestination.stream, {
-        mimeType: 'audio/webm;codecs=opus'
-    });
-    
-    mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-            audioChunks.push(event.data);
-        }
-    };
-
-    mediaRecorder.onstop = () => {
-        // Compile recorded chunks into a downloadable binary blob object
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        const audioUrl = URL.createObjectURL(audioBlob);
+    <script>
+        let sensor = null;
+        let audioCtx = null;
+        let oscillator = null;
+        let gainNode = null;
+        let isRunning = false;
         
-        // Generate download execution path
-        downloadLink.href = audioUrl;
-        downloadLink.download = `emf_sonification_${Date.now()}.webm`;
-        downloadLink.style.display = 'block';
-        statusText.innerText = "Audio rendered successfully. Click link below to save.";
-    };
+        const startBtn = document.getElementById('startBtn');
+        const dcOffsetInput = document.getElementById('dcOffset');
+        const offsetValDisplay = document.getElementById('offsetVal');
+        const audioGainInput = document.getElementById('audioGain');
+        const magDisplay = document.getElementById('magDisplay');
+        const xDisplay = document.getElementById('xDisplay');
+        const yDisplay = document.getElementById('yDisplay');
+        const zDisplay = document.getElementById('zDisplay');
+        
+        // Graphing Setup
+        const canvas = document.getElementById('graphCanvas');
+        const ctx = canvas.getContext('2d');
+        let dataPoints = new Array(200).fill(0);
 
-    mediaRecorder.start();
-    statusText.innerText = "RECORDING DATA STREAM...";
-    recordBtn.disabled = true;
-    stopBtn.disabled = false;
-});
-
-// Step 3: Halt Recording and Compile
-stopBtn.addEventListener('click', () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-        stopBtn.disabled = true;
-        recordBtn.disabled = false;
-    }
-});
-
-// Visualizer Loop
-function drawGraph() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#224422';
-    ctx.lineWidth = 1;
-    for(let i = 0; i < canvas.height; i += 30) {
-        ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
-    }
-
-    if (dataHistory.length > 1) {
-        ctx.strokeStyle = '#33ff33';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let i = 0; i < dataHistory.length; i++) {
-            const x = i;
-            const y = canvas.height - ((dataHistory[i] / 360) * canvas.height);
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        // Adjust canvas resolution for high-DPI displays
+        function resizeCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
         }
-        ctx.stroke();
-    }
-    requestAnimationFrame(drawGraph);
-}
-</script>
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // UI Listeners
+        dcOffsetInput.addEventListener('input', (e) => {
+            offsetValDisplay.textContent = e.target.value;
+        });
+
+        audioGainInput.addEventListener('input', (e) => {
+            if (gainNode) {
+                gainNode.gain.setValueAtTime(e.target.value, audioCtx.currentTime);
+            }
+        });
+
+        startBtn.addEventListener('click', async () => {
+            if (isRunning) {
+                stopApp();
+                return;
+            }
+            await startApp();
+        });
+
+        async function startApp() {
+            // 1. Initialize Web Audio
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
+            // Setup audio synthesis nodes
+            oscillator = audioCtx.createOscillator();
+            gainNode = audioCtx.createGain();
+            
+            // Set wave type (sine provides clean conversion, saw/triangle are more aggressive)
+            oscillator.type = 'sine'; 
+            oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); // Base Frequency
+            
+            gainNode.gain.setValueAtTime(audioGainInput.value, audioCtx.currentTime);
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+
+            // 2. Initialize Hardware Magnetometer Sensor
+            if ('Magnetometer' in window) {
+                try {
+                    // Poll sensor data at 60Hz if supported
+                    sensor = new Magnetometer({ frequency: 60 });
+                    
+                    sensor.addEventListener('reading', () => {
+                        handleSensorData(sensor.x, sensor.y, sensor.z);
+                    });
+
+                    sensor.addEventListener('error', event => {
+                        if (event.error.name === 'NotAllowedError') {
+                            alert('Permission to access magnetometer was denied.');
+                        } else {
+                            alert(`Sensor error: ${event.error.message}`);
+                        }
+                        stopApp();
+                    });
+
+                    sensor.start();
+                    isRunning = true;
+                    startBtn.textContent = "Stop Audio & Sensor";
+                    startBtn.style.backgroundColor = "#ff4444";
+                    startBtn.style.color = "#fff";
+                    
+                    // Start rendering graph loop
+                    drawGraph();
+                    
+                } catch (error) {
+                    alert(`Initialization Error: ${error.message}`);
+                }
+            } else {
+                alert("The Magnetometer API is not supported or enabled on this browser/device. Ensure you are on HTTPS and check browser flags.");
+            }
+        }
+
+        function stopApp() {
+            if (sensor) {
+                sensor.stop();
+            }
+            if (oscillator) {
+                try { oscillator.stop(); } catch(e) {}
+                oscillator.disconnect();
+            }
+            isRunning = false;
+            startBtn.textContent = "Start Audio & Sensor";
+            startBtn.style.backgroundColor = "#00ffcc";
+            startBtn.style.color = "#121212";
+        }
+
+        function handleSensorData(x, y, z) {
+            // Compute total raw magnetic magnitude vector
+            const rawMagnitude = Math.sqrt(x * x + y * y + z * z);
+            
+            // Apply user-defined DC Offset
+            const dcOffset = parseFloat(dcOffsetInput.value);
+            const adjustedMagnitude = Math.max(0, rawMagnitude + dcOffset);
+
+            // Update numerical interface
+            magDisplay.textContent = adjustedMagnitude.toFixed(2);
+            xDisplay.textContent = x.toFixed(1);
+            yDisplay.textContent = y.toFixed(1);
+            zDisplay.textContent = z.toFixed(1);
+
+            // Push adjusted data to sliding graph window
+            dataPoints.push(adjustedMagnitude);
+            dataPoints.shift();
+
+            // Real-Time Waveform Generation: Map microtesla values directly to audio frequency
+            // Base pitch starts at 100Hz, scaling up by 5Hz per microtesla unit
+            if (oscillator && audioCtx) {
+                const targetFrequency = 100 + (adjustedMagnitude * 5);
+                // Clamp frequency to safe human hearing ranges
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 20), 3000);
+                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
+            }
+        }
+
+        // Real-Time Graph Canvas Rendering Loop
+        function drawGraph() {
+            if (!isRunning) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw baseline reference grids
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 1;
+            for(let i = 1; i < 4; i++) {
+                let y = (canvas.height / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            // Draw EMF Waveform Trendline
+            ctx.strokeStyle = '#00ffcc';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            const sliceWidth = canvas.width / dataPoints.length;
+            let x = 0;
+
+            // Simple auto-scaling logic based on data peaks
+            const maxVal = Math.max(...dataPoints, 100); 
+
+            for (let i = 0; i < dataPoints.length; i++) {
+                // Map data point inversely to Y canvas coordinates (0 is top)
+                const yNorm = 1 - (dataPoints[i] / maxVal);
+                const yPos = yNorm * canvas.height;
+
+                if (i === 0) {
+                    ctx.moveTo(x, yPos);
+                } else {
+                    ctx.lineTo(x, yPos);
+                }
+
+                x += sliceWidth;
+            }
+
+            ctx.stroke();
+
+            // Loop animation frame smoothly
+            requestAnimationFrame(drawGraph);
+        }
+    </script>
 </body>
 </html>
