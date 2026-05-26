@@ -357,4 +357,59 @@
 
                     // Dynamic vocal frequency modulation based on spike size
                     const pitchBase = 75 + (deviation * 4.5);
-                    vocalCords.frequency.setTargetAtTime(Math.min(pitchBase, 350), audioCtx.currentTime, 0.0
+                    vocalCords.frequency.setTargetAtTime(Math.min(pitchBase, 350), audioCtx.currentTime, 0.02);
+
+                    const f1 = 450 + (deviation * 15);
+                    const f2 = 1100 + (deviation * 30);
+                    formantF1.frequency.setTargetAtTime(Math.min(f1, 1200), audioCtx.currentTime, 0.03);
+                    formantF2.frequency.setTargetAtTime(Math.min(f2, 2800), audioCtx.currentTime, 0.03);
+
+                } else {
+                    // Smoothly transition UI colors back to teal as data points fall under threshold
+                    if (statusTxt.textContent === "ANOMALY SPARK DETECTED") {
+                        setTrackingUIState(false);
+                    }
+                    targetGain = 0;
+                }
+
+                masterGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.04);
+            }
+        }
+
+        function drawGraph() {
+            if (!isRunning) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw Dynamic Threshold Limit Line
+            const threshold = parseFloat(thresholdInput.value);
+            const maxGraphVal = Math.max(...dataPoints, 6);
+            const threshY = canvas.height - ((threshold / maxGraphVal) * canvas.height);
+            
+            ctx.strokeStyle = 'rgba(255, 68, 68, 0.25)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(0, threshY); ctx.lineTo(canvas.width, threshY); ctx.stroke();
+            ctx.setLineDash([]); 
+
+            // Color code the graph stroke dynamically based on active status
+            ctx.strokeStyle = (statusTxt.textContent === "ANOMALY SPARK DETECTED") ? '#ff4444' : '#00ffcc';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            const sliceWidth = canvas.width / dataPoints.length;
+            let x = 0;
+
+            for (let i = 0; i < dataPoints.length; i++) {
+                const yNorm = 1 - (dataPoints[i] / maxGraphVal);
+                const yPos = yNorm * canvas.height;
+                if (i === 0) ctx.moveTo(x, yPos); else ctx.lineTo(x, yPos);
+                x += sliceWidth;
+            }
+
+            ctx.stroke();
+            requestAnimationFrame(drawGraph);
+        }
+    </script>
+</body>
+</html>
