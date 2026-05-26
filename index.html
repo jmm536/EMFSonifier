@@ -30,144 +30,122 @@
     <div id="status">Engine offline. Enter your phone's Phyphox IP and click start.</div>
 
     <script>
-        let audioCtx, oscillator, gainNode, mediaRecorder;
-        let recordedChunks = [];
-        let isRecording = false;
-        let baseline = null;
-        let pollingInterval = null;
+        (function() {
+    // Prevent duplicate interfaces from rendering
+    if (document.getElementById('bm-sonifier-panel')) return;
 
-        const startBtn = document.getElementById('startBtn');
-        const recordBtn = document.getElementById('recordBtn');
-        const statusDiv = document.getElementById('status');
-        const telemetryDiv = document.getElementById('telemetry');
-        const ipInput = document.getElementById('ipInput');
+    // Construct the UI dashboard element
+    var panel = document.createElement('div');
+    panel.id = 'bm-sonifier-panel';
+    panel.style.position = 'fixed';
+    panel.style.top = '20px';
+    panel.style.right = '20px';
+    panel.style.zIndex = '100000';
+    panel.style.background = '#1a1a1a';
+    panel.style.color = '#00ff66';
+    panel.style.padding = '25px';
+    panel.style.border = '2px solid #00ff66';
+    panel.style.borderRadius = '8px';
+    panel.style.fontFamily = 'monospace';
+    panel.style.textAlign = 'center';
+    panel.style.boxShadow = '0 10px 30px rgba(0,0,0,0.7)';
+    panel.style.width = '280px';
 
-        startBtn.addEventListener('click', () => {
-            if (audioCtx) return;
+    panel.innerHTML = `
+        <h3 style="margin:0 0 15px 0;color:#fff;font-size:15px;letter-spacing:1px;text-transform:uppercase;">Baro-Sonifier Panel</h3>
+        <div id="bm-telemetry" style="font-size:18px;color:#fff;font-weight:bold;margin-bottom:15px;background:#2a2a2a;padding:10px;border-radius:4px;">Pressure: -- hPa</div>
+        <button id="bm-startBtn" style="background:#00ff66;color:#000;border:none;padding:12px 20px;font-weight:bold;font-size:13px;cursor:pointer;border-radius:4px;width:100%;margin-bottom:10px;">START AUDIO ENGINE</button>
+        <button id="bm-recordBtn" style="background:#fff;color:#000;border:none;padding:12px 20px;font-weight:bold;font-size:13px;cursor:pointer;border-radius:4px;width:100%;" disabled>RECORD</button>
+        <div id="bm-status" style="font-size:12px;color:#aaa;margin-top:15px;line-height:1.3;">Awaiting user activation...</div>
+    `;
+    document.body.appendChild(panel);
 
-            let targetIP = ipInput.value.trim();
-            if (!targetIP) {
-                statusDiv.style.color = "#ff3333";
-                statusDiv.innerText = "Error: Please enter a valid IP address.";
-                return;
-            }
+    let audioCtx, oscillator, gainNode, mediaRecorder;
+    let recordedChunks = [];
+    let isRecording = false;
+    let baseline = null;
+    let pollTimer = null;
 
-            // Clean inputs by stripping any accidentally typed http:// prefixes or trailing slashes
-            targetIP = targetIP.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    document.getElementById('bm-startBtn').addEventListener('click', function() {
+        if (audioCtx) return;
 
-            // Initialize Web Audio graph structures
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            oscillator = audioCtx.createOscillator();
-            gainNode = audioCtx.createGain();
-            const dest = audioCtx.createMediaStreamDestination();
-            
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            gainNode.connect(dest);
-            oscillator.start();
-            
-            // Bind media stream capturing nodes for recording functionality
-            mediaRecorder = new MediaRecorder(dest.stream);
-            mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-            mediaRecorder.onstop = saveRecording;
+        // Initialize Web Audio graph structures natively within user gesture limits
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        oscillator = audioCtx.createOscillator();
+        gainNode = audioCtx.createGain();
+        const dest = audioCtx.createMediaStreamDestination();
 
-            // Corrected native API endpoint configuration
-            const targetURL = `http://${targetIP}/get?pressure`;
-            statusDiv.style.color = "#00ff66";
-            statusDiv.innerText = `Poller initiated. Hooking data pipeline to ${targetURL}...`;
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        gainNode.connect(dest);
+        oscillator.start();
 
-            // Data Ingestion Loop (~30Hz polling intervals)
-            pollingInterval = setInterval(async () => {
-                try {
-                    const response = await fetch(targetURL, { method: 'GET', mode: 'cors' });
-                    if (!response.ok) {
-                        throw new Error(`HTTP Bad Server Status: ${response.status}`);
-                    }
-                    const data = await response.json();
-                    
-                    // Step cleanly through the validated JSON hierarchy 
-                    if (!data.buffer || !data.buffer.pressure) {
-                        throw new Error("Connected to phone, but 'Pressure' module isn't active. Open the Pressure experiment in Phyphox.");
-                    }
-
-                    const pressureBuffer = data.buffer.pressure.buffer;
-                    if (pressureBuffer.length === 0) {
-                        statusDiv.style.color = "#ffcc00";
-                        statusDiv.innerText = "Buffer empty. Tap the triangle Play icon inside the phone's Phyphox app to start tracking.";
-                        return;
-                    }
-
-                    // Extract the absolute newest entry from the moving circular array buffer
-                    const pressure = pressureBuffer[pressureBuffer.length - 1];
-                    
-                    // Lock down baseline calibration reference values on first successful array retrieval
-                    if (baseline === null) {
-                        baseline = pressure;
-                    }
-                    
-                    const delta = pressure - baseline;
-                    telemetryDiv.innerText = `Base: ${baseline.toFixed(2)} hPa | Live: ${pressure.toFixed(3)} hPa`;
-                    statusDiv.style.color = "#00ff66";
-                    statusDiv.innerText = `Data feeding smoothly. Stream active.`;
-
-                    // Parameter Modulation calculation
-                    // Lifting the device drops air pressure, causing the tone pitch to slide higher
-                    const targetFreq = 440 - (delta * 1200);
-                    const boundedFreq = Math.max(70, Math.min(1600, targetFreq));
-                    oscillator.frequency.setTargetAtTime(boundedFreq, audioCtx.currentTime, 0.03);
-                    
-                } catch (err) {
-                    statusDiv.style.color = "#ff3333";
-                    
-                    // Catch-all browser security alert system
-                    if (window.location.protocol === 'https:') {
-                        statusDiv.innerHTML = `<b>Connection Failed (Mixed Content Block):</b><br>` +
-                            `Your web app is running via an HTTPS server, but your phone is streaming on unsecured HTTP.<br>` +
-                            `Browsers completely block this crossover. To fix this, run this HTML file locally ` +
-                            `on an unencrypted local address like <b>http://localhost</b> or <b>http://127.0.0.1</b>.`;
-                    } else {
-                        statusDiv.innerText = `Network Error: Cannot pull sensor data.\n` +
-                            `1. Verify the IP address matches the screen exactly (check if it uses :8080 instead of :8000).\n` +
-                            `2. Confirm both your phone and PC are sharing the exact same Wi-Fi connection.\n` +
-                            `3. Details: ${err.message}`;
-                    }
-                }
-            }, 33);
-
-            startBtn.innerText = "ENGINE LIVE";
-            startBtn.style.background = "#444";
-            startBtn.style.color = "#888";
-            recordBtn.disabled = false;
-        });
-
-        recordBtn.addEventListener('click', () => {
-            if (!isRecording) {
-                recordedChunks = [];
-                mediaRecorder.start();
-                isRecording = true;
-                recordBtn.innerText = "STOP & SAVE";
-                recordBtn.style.background = "#ff3333";
-                recordBtn.style.color = "#fff";
-            } else {
-                mediaRecorder.stop();
-                isRecording = false;
-                recordBtn.innerText = "RECORD";
-                recordBtn.style.background = "#fff";
-                recordBtn.style.color = "#000";
-            }
-        });
-
-        function saveRecording() {
+        // Bind capture node to output uncompressed WebM audio objects
+        mediaRecorder = new MediaRecorder(dest.stream);
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
             const blob = new Blob(recordedChunks, { type: 'audio/webm' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `baro_sonifier_capture_${Date.now()}.webm`;
+            a.download = `barometric_capture_${Date.now()}.webm`;
             a.click();
+        };
+
+        document.getElementById('bm-status').innerText = "Syncing with live hardware buffer...";
+        document.getElementById('bm-recordBtn').disabled = false;
+
+        // Loop execution utilizing a relative path to secure local origin mapping
+        pollTimer = setInterval(async () => {
+            try {
+                const res = await fetch('/get?pressure');
+                const data = await res.json();
+                const buffer = data.buffer.pressure.buffer;
+                const pressure = buffer[buffer.length - 1];
+
+                if (pressure !== undefined) {
+                    if (baseline === null) baseline = pressure;
+                    const delta = pressure - baseline;
+                    
+                    document.getElementById('bm-telemetry').innerText = `${pressure.toFixed(3)} hPa`;
+                    
+                    // Pitch shifts based on physical barometric deviations
+                    const targetFreq = 440 - (delta * 1200);
+                    const boundedFreq = Math.max(70, Math.min(1600, targetFreq));
+                    oscillator.frequency.setTargetAtTime(boundedFreq, audioCtx.currentTime, 0.03);
+                }
+            } catch (err) {
+                document.getElementById('bm-status').style.color = '#ff3333';
+                document.getElementById('bm-status').innerText = "Connection loop dropped.";
+            }
+        }, 33);
+
+        this.innerText = "ENGINE ACTIVE";
+        this.style.background = "#333";
+        this.style.color = "#666";
+        this.disabled = true;
+    });
+
+    document.getElementById('bm-recordBtn').addEventListener('click', function() {
+        if (!isRecording) {
+            recordedChunks = [];
+            mediaRecorder.start();
+            isRecording = true;
+            this.innerText = "STOP & DOWNLOAD";
+            this.style.background = "#ff3333";
+            this.style.color = "#fff";
+        } else {
+            mediaRecorder.stop();
+            isRecording = false;
+            this.innerText = "RECORD";
+            this.style.background = "#fff";
+            this.style.color = "#000";
         }
+    });
+})();
     </script>
 </body>
 </html>
