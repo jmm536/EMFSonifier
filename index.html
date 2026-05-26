@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hardware EMF Analytics & Sonifier</title>
+    <title>EMF Deviation Monitor & Sonifier</title>
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background-color: #121212;
             color: #e0e0e0;
             margin: 0;
@@ -18,7 +18,7 @@
 
         h1 {
             color: #00ffcc;
-            font-size: 1.5rem;
+            font-size: 1.4rem;
             margin-bottom: 10px;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -36,7 +36,6 @@
         }
 
         .control-group {
-            margin-top: 15px;
             margin-bottom: 15px;
             display: flex;
             flex-direction: column;
@@ -69,26 +68,10 @@
             font-weight: bold;
             font-size: 1rem;
             cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
         }
 
         button:active {
             background-color: #00ccaa;
-            transform: scale(0.99);
-        }
-
-        #statusBox {
-            width: 100%;
-            max-width: 500px;
-            background-color: #1a2625;
-            border: 1px solid #005544;
-            color: #88ffd8;
-            padding: 12px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            margin-bottom: 15px;
-            box-sizing: border-box;
-            display: block;
         }
 
         .readout {
@@ -100,19 +83,13 @@
             font-weight: bold;
         }
 
-        .axes {
-            display: flex;
-            justify-content: space-between;
-            width: 100%;
-            max-width: 500px;
-            font-family: monospace;
-            font-size: 0.9rem;
+        .note {
+            font-size: 0.85rem;
             color: #888;
+            text-align: center;
+            max-width: 500px;
             margin-bottom: 15px;
-            background: #161616;
-            padding: 8px 15px;
-            border-radius: 4px;
-            box-sizing: border-box;
+            line-height: 1.4;
         }
 
         canvas {
@@ -127,54 +104,48 @@
 </head>
 <body>
 
-    <h1>EMF Hardware Interface</h1>
-
-    <div id="statusBox">System status: Standing by. Awaiting secure handshake authorization.</div>
+    <h1>EMF Deviation Interface</h1>
+    
+    <div class="note">
+        <strong>Operation Note:</strong> Keep the phone stationary. Because this utilizes the compass sensor, physical rotation changes the baseline. Use the DC Offset to zero out your background environment.
+    </div>
 
     <div class="panel">
-        <button id="actionBtn">Authorize & Start Sensor</button>
+        <button id="startBtn">Engage Monitor & Audio</button>
         
-        <div class="control-group">
-            <label for="dcOffset">Manual DC Offset Adjustment (µT): <span id="offsetVal">0</span></label>
-            <input type="range" id="dcOffset" min="-150" max="150" value="0" step="1">
+        <div class="control-group" style="margin-top: 15px;">
+            <label for="dcOffset">Visual DC Offset: <span id="offsetVal">0</span></label>
+            <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
         </div>
 
         <div class="control-group">
-            <label for="audioGain">Audio Waveform Master Volume</label>
+            <label for="audioGain">Audio Master Volume</label>
             <input type="range" id="audioGain" min="0" max="1" value="0.3" step="0.05">
         </div>
     </div>
 
-    <div class="readout"><span id="magDisplay">0.00</span> µT</div>
-    
-    <div class="axes">
-        <span>X: <span id="xDisplay">0.0</span> µT</span>
-        <span>Y: <span id="yDisplay">0.0</span> µT</span>
-        <span>Z: <span id="zDisplay">0.0</span> µT</span>
-    </div>
+    <div class="readout"><span id="magDisplay">0.00</span> <span style="font-size: 1.2rem;">Δ Compass Flux</span></div>
 
     <canvas id="graphCanvas"></canvas>
 
     <script>
-        let sensor = null;
         let audioCtx = null;
         let oscillator = null;
         let gainNode = null;
         let isRunning = false;
         
-        const actionBtn = document.getElementById('actionBtn');
-        const statusBox = document.getElementById('statusBox');
+        let lastAlpha = null;
+        const eventName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
+
+        const startBtn = document.getElementById('startBtn');
         const dcOffsetInput = document.getElementById('dcOffset');
         const offsetValDisplay = document.getElementById('offsetVal');
         const audioGainInput = document.getElementById('audioGain');
         const magDisplay = document.getElementById('magDisplay');
-        const xDisplay = document.getElementById('xDisplay');
-        const yDisplay = document.getElementById('yDisplay');
-        const zDisplay = document.getElementById('zDisplay');
         
         const canvas = document.getElementById('graphCanvas');
         const ctx = canvas.getContext('2d');
-        let dataPoints = new Array(250).fill(0);
+        let dataPoints = new Array(200).fill(0);
 
         function resizeCanvas() {
             canvas.width = canvas.clientWidth;
@@ -193,174 +164,144 @@
             }
         });
 
-        actionBtn.addEventListener('click', async () => {
+        startBtn.addEventListener('click', async () => {
             if (isRunning) {
-                stopApplication();
+                stopApp();
                 return;
             }
-            await initiateHandshake();
+            await startApp();
         });
 
-        // Clear and update status alerts
-        function updateStatus(message, isError = false) {
-            statusBox.style.backgroundColor = isError ? "#2a1414" : "#1a2625";
-            statusBox.style.borderColor = isError ? "#662222" : "#005544";
-            statusBox.style.color = isError ? "#ff9999" : "#88ffd8";
-            statusBox.innerHTML = message;
-        }
-
-        async function initiateHandshake() {
-            // 1. Initialize Audio Context
-            try {
-                if (!audioCtx) {
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                }
-                if (audioCtx.state === 'suspended') {
-                    await audioCtx.resume();
-                }
-            } catch (audioError) {
-                updateStatus(`Audio initialization failed: ${audioError.message}`, true);
-                return;
+        async function startApp() {
+            // 1. Boot Audio Context
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
             }
 
-            // 2. The Feature-Policy & Permissions Handshake
-            if (!('Magnetometer' in window)) {
-                updateStatus(`<strong>Handshake Rejected:</strong> The <code>Magnetometer</code> class is undefined.<br><br>
-                1. Ensure you are loading via secure HTTPS.<br>
-                2. On Android Chrome, turn on <code>chrome://flags/#enable-generic-sensor-extra-classes</code> and restart your browser.`, true);
-                return;
-            }
+            oscillator = audioCtx.createOscillator();
+            gainNode = audioCtx.createGain();
+            
+            oscillator.type = 'sine'; 
+            oscillator.frequency.setValueAtTime(160, audioCtx.currentTime); 
+            gainNode.gain.setValueAtTime(parseFloat(audioGainInput.value), audioCtx.currentTime);
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
 
-            try {
-                if (navigator.permissions) {
-                    // Query the exact magnetometer token permissions interface
-                    const permissionStatus = await navigator.permissions.query({ name: 'magnetometer' });
-                    
-                    if (permissionStatus.state === 'denied') {
-                        updateStatus("<strong>Handshake Rejected:</strong> Browser security rules have explicitly denied webpage access to this phone's hardware magnetometer.", true);
-                        return;
-                    }
-                    
-                    // Track explicit structural changes down the line
-                    permissionStatus.onchange = () => {
-                        if (permissionStatus.state === 'denied' && isRunning) {
-                            stopApplication();
+            // 2. Register Orientation Compass Listener (No Flags Required)
+            if (typeof DeviceOrientationEvent !== 'undefined') {
+                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    // Handshake handler for iOS environments
+                    try {
+                        const permissionState = await DeviceOrientationEvent.requestPermission();
+                        if (permissionState === 'granted') {
+                            bindSensor();
+                        } else {
+                            alert('Permission denied.');
+                            stopApp();
                         }
-                    };
+                    } catch (err) {
+                        alert(`Error: ${err.message}`);
+                        stopApp();
+                    }
+                } else {
+                    // Native Android Chrome pathway
+                    bindSensor();
                 }
-
-                // 3. Spawning Hardware Event Listeners
-                sensor = new Magnetometer({ frequency: 40 }); // Poll field shifts at 40Hz
-                
-                sensor.addEventListener('reading', () => {
-                    processEMFMetrics(sensor.x, sensor.y, sensor.z);
-                });
-
-                sensor.addEventListener('error', (sensorEvent) => {
-                    updateStatus(`Hardware Driver Error: ${sensorEvent.error.message}`, true);
-                    stopApplication();
-                });
-
-                // Open audio synthesis nodes
-                oscillator = audioCtx.createOscillator();
-                gainNode = audioCtx.createGain();
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(180, audioCtx.currentTime);
-                gainNode.gain.setValueAtTime(parseFloat(audioGainInput.value), audioCtx.currentTime);
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                oscillator.start();
-
-                sensor.start();
-                isRunning = true;
-                
-                actionBtn.textContent = "Halt Hardware Telemetry";
-                actionBtn.style.backgroundColor = "#ff4444";
-                actionBtn.style.color = "#fff";
-                updateStatus("Secure Handshake Complete. Actively streaming real-time hardware data lines.");
-                
-                renderTimelineGraph();
-
-            } catch (handshakeError) {
-                updateStatus(`Handshake Exception: ${handshakeError.message}`, true);
-                stopApplication();
+            } else {
+                alert("Device orientation handles are completely missing on this browser.");
             }
         }
 
-        function stopApplication() {
-            if (sensor) {
-                try { sensor.stop(); } catch(e) {}
-            }
+        function bindSensor() {
+            window.addEventListener(eventName, handleCompassFlux, true);
+            isRunning = true;
+            startBtn.textContent = "Halt Monitor Engine";
+            startBtn.style.backgroundColor = "#ff4444";
+            startBtn.style.color = "#fff";
+            drawGraph();
+        }
+
+        function stopApp() {
+            window.removeEventListener(eventName, handleCompassFlux, true);
             if (oscillator) {
                 try { oscillator.stop(); } catch(e) {}
                 oscillator.disconnect();
             }
-            if (gainNode) {
-                gainNode.disconnect();
-            }
+            if (gainNode) { gainNode.disconnect(); }
             isRunning = false;
-            actionBtn.textContent = "Authorize & Start Sensor";
-            actionBtn.style.backgroundColor = "#00ffcc";
-            actionBtn.style.color = "#121212";
-            updateStatus("Data links disconnected. Magnetometer sleeping.");
+            lastAlpha = null;
+            startBtn.textContent = "Engage Monitor & Audio";
+            startBtn.style.backgroundColor = "#00ffcc";
+            startBtn.style.color = "#121212";
         }
 
-        function processEMFMetrics(x, y, z) {
-            // Absolute Vector Translation: Magnitude calculations via √(x² + y² + z²)
-            const absoluteTesla = Math.sqrt(x * x + y * y + z * z);
+        function handleCompassFlux(event) {
+            // Isolate Alpha: This represents the rotation around the Z-axis (Compass heading)
+            // It is directly controlled by the internal hardware geomagnetic chip.
+            const alpha = event.alpha || 0; 
+
+            if (lastAlpha === null) {
+                lastAlpha = alpha;
+                return;
+            }
+
+            // Calculate the velocity of the compass needle deviation.
+            // Shortest-path logic handles the 0-360 degree radial wrap cleanly.
+            let deltaAlpha = Math.abs(alpha - lastAlpha);
+            if (deltaAlpha > 180) {
+                deltaAlpha = 360 - deltaAlpha;
+            }
+
+            // Apply scaling to the deviation so subtle micro-fluctuations map accurately
+            const fluxIntensity = deltaAlpha * 50.0;
             
-            // Apply real-time manual slider offset modification
-            const dcOffset = parseFloat(dcOffsetInput.value);
-            const adjustedEMF = Math.max(0, absoluteTesla + dcOffset);
+            // Add the manual DC Offset
+            const offset = parseFloat(dcOffsetInput.value);
+            const adjustedFlux = Math.max(0, fluxIntensity + offset);
 
-            // Populate active interface text nodes
-            magDisplay.textContent = adjustedEMF.toFixed(2);
-            xDisplay.textContent = x.toFixed(1);
-            yDisplay.textContent = y.toFixed(1);
-            zDisplay.textContent = z.toFixed(1);
+            // Print metric to interface
+            magDisplay.textContent = adjustedFlux.toFixed(2);
 
-            // Cascade values into array stream buffer
-            dataPoints.push(adjustedEMF);
+            // Update sliding graph timeline array
+            dataPoints.push(adjustedFlux);
             dataPoints.shift();
 
-            // Frequency adjustments tracking field intensity alterations
-            if (oscillator && audioCtx && gainNode) {
-                // Base sound wave starts at 120Hz, scaling smoothly up to 2.5kHz
-                const targetFrequency = 120 + (adjustedEMF * 4.5);
-                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2500);
-                
-                // setTargetAtTime protects against raw click/pop audio artifacts
+            // Web Audio Sonifier Processing
+            if (oscillator && audioCtx) {
+                // Base tone at 140Hz, pitch scales upward linearly based on compass flux shifts
+                const targetFrequency = 140 + (adjustedFlux * 6);
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 45), 2200);
                 oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
             }
+
+            lastAlpha = alpha;
         }
 
-        // Rolling Timeline Graph Logic
-        function renderTimelineGraph() {
+        // Live Graphic Timeline Control Loop
+        function drawGraph() {
             if (!isRunning) return;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Draw visual axis grids
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 1;
-            for(let i = 1; i < 5; i++) {
-                let y = (canvas.height / 5) * i;
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(canvas.width, y);
-                ctx.stroke();
+            for(let i = 1; i < 4; i++) {
+                let y = (canvas.height / 4) * i;
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
             }
 
-            // Begin tracing continuous EMF trendline values
             ctx.strokeStyle = '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
 
             const sliceWidth = canvas.width / dataPoints.length;
             let x = 0;
-
-            const maxVal = Math.max(...dataPoints, 120); 
+            const maxVal = Math.max(...dataPoints, 50); 
 
             for (let i = 0; i < dataPoints.length; i++) {
                 const yNorm = 1 - (dataPoints[i] / maxVal);
@@ -375,7 +316,7 @@
             }
 
             ctx.stroke();
-            requestAnimationFrame(renderTimelineGraph);
+            requestAnimationFrame(drawGraph);
         }
     </script>
 </body>
