@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EMF Anomaly Detection Matrix</title>
+    <title>Adaptive EMF Anomaly Matrix</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -48,6 +48,7 @@
             padding: 10px 15px;
             border-radius: 4px;
             border: 1px solid #222;
+            transition: border-color 0.3s;
         }
 
         .status-dot {
@@ -56,7 +57,7 @@
             background-color: #333;
             border-radius: 50%;
             display: inline-block;
-            transition: background-color 0.2s;
+            transition: background-color 0.3s;
         }
 
         .control-group {
@@ -82,26 +83,19 @@
             outline: none;
         }
 
-        .btn-row {
-            display: flex;
-            gap: 10px;
-        }
-
         button {
-            flex: 1;
-            padding: 12px;
+            width: 100%;
+            padding: 14px;
             border: none;
             border-radius: 4px;
             font-weight: bold;
-            font-size: 0.9rem;
+            font-size: 1rem;
             cursor: pointer;
             text-transform: uppercase;
+            background-color: #00ffcc;
+            color: #0a0a0a;
             transition: background 0.2s;
         }
-
-        #startBtn { background-color: #00ffcc; color: #0a0a0a; }
-        #calBtn { background-color: #222; color: #00ffcc; border: 1px solid #333; }
-        button:disabled { background-color: #111 !important; color: #444 !important; border: 1px solid #222 !important; cursor: not-allowed; }
 
         .readout {
             font-size: 2.4rem;
@@ -110,6 +104,7 @@
             text-align: center;
             font-weight: bold;
             padding: 10px 0;
+            transition: color 0.3s;
         }
 
         canvas {
@@ -143,16 +138,13 @@
 
     <div class="grid-container">
         
-        <div class="indicator-bar">
+        <div id="indicatorBar" class="indicator-bar">
             <span id="statusTxt" style="font-size: 0.85rem; font-weight: bold; color: #aaa;">SYSTEM UNARMED</span>
             <div id="statusDot" class="status-dot"></div>
         </div>
 
         <div class="panel">
-            <div class="btn-row">
-                <button id="startBtn">Arm System</button>
-                <button id="calBtn" disabled>Zero Baseline</button>
-            </div>
+            <button id="startBtn">Arm Adaptive System</button>
 
             <div class="control-group">
                 <label for="threshold">Anomaly Sensitivity Threshold: <span id="threshVal">1.5</span>°</label>
@@ -165,14 +157,14 @@
             </div>
         </div>
 
-        <div class="readout"><span id="magDisplay">0.00</span>°</div>
+        <div class="readout" id="mainReadout"><span id="magDisplay">0.00</span>°</div>
 
         <canvas id="graphCanvas"></canvas>
 
         <div class="panel" style="padding: 10px;">
             <label style="margin-bottom: 6px; display: block;">Real-Time Operation Log</label>
             <div id="logPanel" class="log-panel">
-                <div class="log-entry">System standing by. Secure HTTPS deployment verified.</div>
+                <div class="log-entry">System standing by. Adaptive baseline tracking ready.</div>
             </div>
         </div>
 
@@ -185,19 +177,19 @@
         let formantF1 = null, formantF2 = null;
 
         let isRunning = false;
-        let calibratedAlpha = null;
-        let lastAlpha = null;
+        let adaptiveAlpha = null; // The drifting baseline tracker
         
         const eventName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
 
         const startBtn = document.getElementById('startBtn');
-        const calBtn = document.getElementById('calBtn');
+        const indicatorBar = document.getElementById('indicatorBar');
         const statusTxt = document.getElementById('statusTxt');
         const statusDot = document.getElementById('statusDot');
         const thresholdInput = document.getElementById('threshold');
         const threshVal = document.getElementById('threshVal');
         const audioGainInput = document.getElementById('audioGain');
         const magDisplay = document.getElementById('magDisplay');
+        const mainReadout = document.getElementById('mainReadout');
         const logPanel = document.getElementById('logPanel');
         
         const canvas = document.getElementById('graphCanvas');
@@ -218,8 +210,6 @@
             await startMatrix();
         });
 
-        calBtn.addEventListener('click', () => { if (lastAlpha !== null) calibrateBaseline(lastAlpha); });
-
         function logEvent(text, isAlert = false) {
             const timeStr = new Date().toLocaleTimeString();
             const entry = document.createElement('div');
@@ -234,7 +224,6 @@
                 if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-                // Build Vocal Formant Engine
                 vocalCords = audioCtx.createOscillator();
                 vocalCords.type = 'sawtooth';
                 vocalCords.frequency.setValueAtTime(80, audioCtx.currentTime); 
@@ -245,12 +234,10 @@
                 formantF1 = audioCtx.createBiquadFilter();
                 formantF1.type = 'bandpass';
                 formantF1.Q.setValueAtTime(25, audioCtx.currentTime);
-                formantF1.frequency.setValueAtTime(500, audioCtx.currentTime);
 
                 formantF2 = audioCtx.createBiquadFilter();
                 formantF2.type = 'bandpass';
                 formantF2.Q.setValueAtTime(20, audioCtx.currentTime);
-                formantF2.frequency.setValueAtTime(1500, audioCtx.currentTime);
 
                 vocalCords.connect(formantF1);
                 vocalCords.connect(formantF2);
@@ -260,7 +247,6 @@
                 
                 vocalCords.start();
 
-                // Connect Device Orientation Engine
                 if (typeof DeviceOrientationEvent !== 'undefined') {
                     if (typeof DeviceOrientationEvent.requestPermission === 'function') {
                         const state = await DeviceOrientationEvent.requestPermission();
@@ -283,22 +269,26 @@
             startBtn.textContent = "Halt System";
             startBtn.style.backgroundColor = "#ff4444";
             startBtn.style.color = "#fff";
-            calBtn.disabled = false;
             
-            statusTxt.textContent = "CALIBRATING FIELD...";
-            statusTxt.style.color = "#ffaa00";
-            statusDot.style.backgroundColor = "#ffaa00";
-            
-            logEvent("Telemetry lines mounted. Calculating background ambient variables...");
+            setTrackingUIState(false);
+            logEvent("Adaptive tracking lines mounted. Monitoring dynamic shifts...");
             drawGraph();
         }
 
-        function calibrateBaseline(baseAngle) {
-            calibratedAlpha = baseAngle;
-            statusTxt.textContent = "SYSTEM ARMED & STABLE";
-            statusTxt.style.color = "#00ffcc";
-            statusDot.style.backgroundColor = "#00ffcc";
-            logEvent(`Ambient matrix zeroed. Baseline compass angle locked at ${baseAngle.toFixed(1)}°`);
+        function setTrackingUIState(isAnomaly) {
+            if (isAnomaly) {
+                statusTxt.textContent = "ANOMALY SPARK DETECTED";
+                statusTxt.style.color = "#ff4444";
+                statusDot.style.backgroundColor = "#ff4444";
+                indicatorBar.style.borderColor = "#ff4444";
+                mainReadout.style.color = "#ff4444";
+            } else {
+                statusTxt.textContent = "ARMED & DRIFT TRACKING";
+                statusTxt.style.color = "#00ffcc";
+                statusDot.style.backgroundColor = "#00ffcc";
+                indicatorBar.style.borderColor = "#222";
+                mainReadout.style.color = "#00ffcc";
+            }
         }
 
         function stopMatrix() {
@@ -308,115 +298,63 @@
             if (masterGain) masterGain.disconnect();
 
             isRunning = false;
-            calibratedAlpha = null;
-            lastAlpha = null;
+            adaptiveAlpha = null;
             
-            startBtn.textContent = "Arm System";
+            startBtn.textContent = "Arm Adaptive System";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#0a0a0a";
-            calBtn.disabled = true;
             
             statusTxt.textContent = "SYSTEM UNARMED";
             statusTxt.style.color = "#aaa";
             statusDot.style.backgroundColor = "#333";
+            indicatorBar.style.borderColor = "#222";
+            mainReadout.style.color = "#00ffcc";
             
             logEvent("Telemetry links severed. Voice synth offline.");
         }
 
         function processTelemetry(event) {
             const alpha = event.alpha || 0;
-            lastAlpha = alpha;
 
-            // Handle immediate initialization calibration sequence
-            if (calibratedAlpha === null) {
-                calibrateBaseline(alpha);
+            // Initialize baseline on first frame
+            if (adaptiveAlpha === null) {
+                adaptiveAlpha = alpha;
                 return;
             }
 
-            // Calculate exact angular tracking deviation from the zeroed baseline
-            let deviation = Math.abs(alpha - calibratedAlpha);
-            if (deviation > 180) deviation = 360 - deviation;
+            // Calculate instantaneous angular distance from the fluid baseline
+            let diff = alpha - adaptiveAlpha;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+
+            const deviation = Math.abs(diff);
 
             magDisplay.textContent = deviation.toFixed(2);
             dataPoints.push(deviation);
             dataPoints.shift();
+
+            // --- THE DRIFT ENGINE ---
+            // Allow the baseline to slowly track towards the current orientation angle.
+            // 0.04 means the baseline absorbs ~4% of the angle gap every single sensor update.
+            adaptiveAlpha += diff * 0.04;
+            if (adaptiveAlpha < 0) adaptiveAlpha += 360;
+            if (adaptiveAlpha >= 360) adaptiveAlpha -= 360;
 
             if (isRunning && vocalCords && masterGain) {
                 const threshold = parseFloat(thresholdInput.value);
                 let targetGain = 0;
 
                 if (deviation > threshold) {
-                    // Anomaly condition triggered
-                    statusTxt.textContent = "ANOMALY DETECTED";
-                    statusTxt.style.color = "#ff4444";
-                    statusDot.style.backgroundColor = "#ff4444";
+                    // Turn layout RED upon crossing the deviation boundary
+                    setTrackingUIState(true);
                     
                     const maxVol = parseFloat(audioGainInput.value);
-                    // Scale voice volume relative to anomaly intensity
-                    targetGain = Math.min(maxVol, ((deviation - threshold) / 3) * maxVol);
+                    targetGain = Math.min(maxVol, ((deviation - threshold) / 2) * maxVol);
                     
-                    // Throttle logs so we only log the initial break through the threshold
                     if (masterGain.gain.value === 0) {
-                        logEvent(`EMF Variance Limit Breached! Flux: +${deviation.toFixed(2)}°`, true);
+                        logEvent(`Flux Surge: +${deviation.toFixed(2)}° over threshold.`, true);
                     }
 
-                    // Shift vowel formant tracks dynamically based on anomaly intensity
-                    const pitchBase = 75 + (deviation * 4);
-                    vocalCords.frequency.setTargetAtTime(Math.min(pitchBase, 350), audioCtx.currentTime, 0.02);
-
-                    const f1 = 450 + (deviation * 15);
-                    const f2 = 1100 + (deviation * 30);
-                    formantF1.frequency.setTargetAtTime(Math.min(f1, 1200), audioCtx.currentTime, 0.03);
-                    formantF2.frequency.setTargetAtTime(Math.min(f2, 2800), audioCtx.currentTime, 0.03);
-
-                } else {
-                    // Return to normal structural baseline parameters
-                    if (statusTxt.textContent === "ANOMALY DETECTED") {
-                        statusTxt.textContent = "SYSTEM ARMED & STABLE";
-                        statusTxt.style.color = "#00ffcc";
-                        statusDot.style.backgroundColor = "#00ffcc";
-                    }
-                    targetGain = 0;
-                }
-
-                masterGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.03);
-            }
-        }
-
-        function drawGraph() {
-            if (!isRunning) return;
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw Threshold Limit Line
-            const threshold = parseFloat(thresholdInput.value);
-            const maxGraphVal = Math.max(...dataPoints, 6);
-            const threshY = canvas.height - ((threshold / maxGraphVal) * canvas.height);
-            
-            ctx.strokeStyle = 'rgba(255, 68, 68, 0.3)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath(); ctx.moveTo(0, threshY); ctx.lineTo(canvas.width, threshY); ctx.stroke();
-            ctx.setLineDash([]); // Reset
-
-            // Plot Telemetry Trace
-            ctx.strokeStyle = (statusTxt.textContent === "ANOMALY DETECTED") ? '#ff4444' : '#00ffcc';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-
-            const sliceWidth = canvas.width / dataPoints.length;
-            let x = 0;
-
-            for (let i = 0; i < dataPoints.length; i++) {
-                const yNorm = 1 - (dataPoints[i] / maxGraphVal);
-                const yPos = yNorm * canvas.height;
-                if (i === 0) ctx.moveTo(x, yPos); else ctx.lineTo(x, yPos);
-                x += sliceWidth;
-            }
-
-            ctx.stroke();
-            requestAnimationFrame(drawGraph);
-        }
-    </script>
-</body>
-</html>
+                    // Dynamic vocal frequency modulation based on spike size
+                    const pitchBase = 75 + (deviation * 4.5);
+                    vocalCords.frequency.setTargetAtTime(Math.min(pitchBase, 350), audioCtx.currentTime, 0.0
