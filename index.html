@@ -3,103 +3,106 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mag Diagnostic Rig</title>
+    <title>Baro-Sonifier</title>
     <style>
-        body { background: #111; color: #fff; font-family: monospace; padding: 20px; font-size: 14px; }
-        button { background: #00ff66; color: #000; border: none; padding: 15px; font-size: 16px; width: 100%; margin-bottom: 20px; font-weight: bold; cursor: pointer; }
-        .telemetry-box { background: #222; border: 1px solid #444; padding: 15px; border-radius: 4px; margin-bottom: 10px; }
-        .active { color: #00ff66; }
-        .dead { color: #ff3333; }
+        body { background: #111; color: #fff; font-family: sans-serif; text-align: center; padding: 20px; }
+        button { background: #fff; color: #000; border: none; padding: 15px 30px; font-size: 16px; margin: 10px; cursor: pointer; border-radius: 4px; }
+        #status { margin-top: 20px; color: #aaa; font-family: monospace; }
     </style>
 </head>
 <body>
-
-    <button id="startBtn">INITIALIZE ENGINE</button>
-
-    <div class="telemetry-box">
-        <h3>System Telemetry</h3>
-        <div>Audio Context: <span id="audioStatus" class="dead">INACTIVE</span></div>
-        <div>Current Audio Pitch: <span id="pitchStatus">0 Hz</span></div>
-    </div>
-
-    <div class="telemetry-box">
-        <h3>Sensor Stream (Raw Output)</h3>
-        <div>Event Fired Count: <span id="eventCount">0</span></div>
-        <div>Alpha (Rotation): <span id="valAlpha" class="dead">Waiting...</span></div>
-        <div>Absolute Orientation Support: <span id="absoluteSupport">Checking...</span></div>
-    </div>
+    <h1>Real-Time Barometric Sonifier</h1>
+    <button id="startBtn">Start Audio</button>
+    <button id="recordBtn" disabled>Record</button>
+    <div id="status">Awaiting engine startup...</div>
 
     <script>
-        let audioCtx, oscillator, gainNode;
-        let eventCounter = 0;
+        let audioCtx, oscillator, gainNode, mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+        let baseline = null;
 
         const startBtn = document.getElementById('startBtn');
-        const audioStatus = document.getElementById('audioStatus');
-        const pitchStatus = document.getElementById('pitchStatus');
-        const eventCount = document.getElementById('eventCount');
-        const valAlpha = document.getElementById('valAlpha');
-        const absoluteSupport = document.getElementById('absoluteSupport');
+        const recordBtn = document.getElementById('recordBtn');
+        const statusDiv = document.getElementById('status');
 
-        // Check availability immediately on load
-        if ('ondeviceorientationabsolute' in window) {
-            absoluteSupport.innerText = "YES (Hardware Absolute Available)";
-            absoluteSupport.className = "active";
-        } else {
-            absoluteSupport.innerText = "NO (Using standard orientation matrix)";
-            absoluteSupport.className = "dead";
-        }
-
-        startBtn.addEventListener('click', () => {
+        startBtn.addEventListener('click', async () => {
             if (audioCtx) return;
 
-            // Fire up Web Audio
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
-
+            
+            const dest = audioCtx.createMediaStreamDestination();
             oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(300, audioCtx.currentTime); // Base fallback pitch
+            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
             
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
+            gainNode.connect(dest);
             oscillator.start();
+            
+            mediaRecorder = new MediaRecorder(dest.stream);
+            mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+            mediaRecorder.onstop = saveRecording;
 
-            audioStatus.innerText = "RUNNING";
-            audioStatus.className = "active";
-            startBtn.innerText = "ENGINE LIVE";
-            startBtn.style.background = "#444";
-            startBtn.style.color = "#888";
+            if ('Barometer' in window) {
+                try {
+                    const permission = await navigator.permissions.query({ name: 'barometer' });
+                    if (permission.state === 'denied') {
+                        statusDiv.innerText = "Error: Barometer permission explicitly blocked.";
+                        return;
+                    }
 
-            // Bind to both standard and absolute orientation pipelines
-            window.addEventListener('deviceorientationabsolute', processMotion, true);
-            window.addEventListener('deviceorientation', processMotion, true);
-        });
-
-        function processMotion(e) {
-            eventCounter++;
-            eventCount.innerText = eventCounter;
-
-            // Extract the rotation vector
-            let rotation = e.alpha;
-            if (e.webkitCompassHeading) {
-                rotation = e.webkitCompassHeading; // iOS hook stability
-            }
-
-            if (rotation !== null && rotation !== undefined) {
-                valAlpha.innerText = `${rotation.toFixed(2)}°`;
-                valAlpha.className = "active";
-
-                // Map 0-360 degrees straight to 150Hz - 750Hz 
-                // Direct assignment bypassing target time constants to remove processing lag
-                const targetFreq = 150 + (rotation * 1.66);
-                if (oscillator) {
-                    oscillator.frequency.value = targetFreq;
-                    pitchStatus.innerText = `${Math.round(targetFreq)} Hz`;
+                    const sensor = new Barometer({ frequency: 30 });
+                    sensor.addEventListener('reading', () => {
+                        const pressure = sensor.pressure; // Pulls absolute hPa
+                        
+                        if (baseline === null) {
+                            baseline = pressure; // Locks ambient pressure ceiling
+                        }
+                        
+                        const delta = pressure - baseline;
+                        statusDiv.innerText = `Abs: ${pressure.toFixed(3)} hPa | Delta: ${delta.toFixed(3)} hPa`;
+                        
+                        // Map delta values into an audible wave target spectrum
+                        const targetFreq = 440 - (delta * 1000);
+                        oscillator.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.01);
+                    });
+                    
+                    sensor.start();
+                    recordBtn.disabled = false;
+                    statusDiv.innerText = "Barometer online. Core calibrated.";
+                } catch (err) {
+                    statusDiv.innerText = `Hardware Link Failed: ${err.message}`;
                 }
             } else {
-                valAlpha.innerText = "NULL (Sensor starved by browser security)";
-                valAlpha.className = "dead";
+                statusDiv.innerText = "Barometer API unsupported. Check secure context (HTTPS) or Chrome Flags.";
             }
+        });
+
+        recordBtn.addEventListener('click', () => {
+            if (!isRecording) {
+                recordedChunks = [];
+                mediaRecorder.start();
+                isRecording = true;
+                recordBtn.innerText = "Stop & Save WebM";
+                recordBtn.style.background = "#ff3333";
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                recordBtn.innerText = "Record";
+                recordBtn.style.background = "#fff";
+            }
+        });
+
+        function saveRecording() {
+            const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `baro_capture_${Date.now()}.webm`;
+            a.click();
         }
     </script>
 </body>
