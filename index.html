@@ -2,92 +2,144 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Barometric Web Command Station</title>
+    <title>Barometric Network Sonifier</title>
     <style>
-        body { background: #050505; color: #00ff66; font-family: monospace; padding: 30px; text-align: center; }
-        .dashboard { background: #111; border: 1px solid #333; padding: 25px; border-radius: 8px; max-width: 500px; margin: 0 auto 20px auto; }
-        input { background: #222; color: #fff; border: 1px solid #444; padding: 10px; width: 80%; text-align: center; font-size: 16px; margin-bottom: 15px; }
-        button { background: #00ff66; color: #000; font-weight: bold; border: none; padding: 15px 30px; margin: 5px; cursor: pointer; border-radius: 4px; }
+        body { background: #111; color: #00ff66; font-family: monospace; padding: 30px; text-align: center; }
+        .panel { background: #222; border: 1px solid #444; padding: 20px; border-radius: 6px; max-width: 450px; margin: 0 auto 20px auto; }
+        input { background: #333; color: #fff; border: 1px solid #555; padding: 10px; font-size: 16px; width: 80%; text-align: center; border-radius: 4px; margin-top: 10px; }
+        button { background: #00ff66; color: #000; border: none; padding: 15px 30px; font-size: 16px; font-weight: bold; margin: 10px; cursor: pointer; border-radius: 4px; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
         #recordBtn { background: #fff; color: #000; }
-        #status { margin-top: 15px; color: #888; }
+        #status { margin-top: 20px; color: #aaa; font-size: 14px; white-space: pre-wrap; line-height: 1.4; }
+        .telemetry { font-size: 18px; color: #fff; margin: 15px 0; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h1>Barometric Command Station</h1>
+    <h1>Barometric Network Sonifier</h1>
     
-    <div class="dashboard">
-        <label>Target Phone Phyphox IP:</label><br>
-        <input type="text" id="ipAddress" value="192.168.1.50:8000">
-        <div id="telemetry">Pressure: -- hPa</div>
+    <div class="panel">
+        <label for="ipInput">Phyphox IP & Port (from your phone screen):</label><br>
+        <input type="text" id="ipInput" value="192.168.1.50:8080" placeholder="e.g., 192.168.1.50:8080">
+        <div id="telemetry" class="telemetry">Pressure: -- hPa</div>
     </div>
 
-    <button id="connectBtn">INITIALIZE STREAM</button>
-    <button id="recordBtn" disabled>RECORD AUDIO</button>
-    <div id="status">Awaiting network initialization...</div>
+    <button id="startBtn">START AUDIO ENGINE</button>
+    <button id="recordBtn" disabled>RECORD</button>
+    
+    <div id="status">Engine offline. Enter your phone's Phyphox IP and click start.</div>
 
     <script>
         let audioCtx, oscillator, gainNode, mediaRecorder;
         let recordedChunks = [];
         let isRecording = false;
         let baseline = null;
-        let pollTimer = null;
+        let pollingInterval = null;
 
-        const connectBtn = document.getElementById('connectBtn');
+        const startBtn = document.getElementById('startBtn');
         const recordBtn = document.getElementById('recordBtn');
         const statusDiv = document.getElementById('status');
-        const telemetry = document.getElementById('telemetry');
-        const ipInput = document.getElementById('ipAddress');
+        const telemetryDiv = document.getElementById('telemetry');
+        const ipInput = document.getElementById('ipInput');
 
-        connectBtn.addEventListener('click', () => {
+        startBtn.addEventListener('click', () => {
             if (audioCtx) return;
 
-            // Start Audio Engine
+            let targetIP = ipInput.value.trim();
+            if (!targetIP) {
+                statusDiv.style.color = "#ff3333";
+                statusDiv.innerText = "Error: Please enter a valid IP address.";
+                return;
+            }
+
+            // Clean inputs by stripping any accidentally typed http:// prefixes or trailing slashes
+            targetIP = targetIP.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+            // Initialize Web Audio graph structures
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
             const dest = audioCtx.createMediaStreamDestination();
             
             oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+            
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
             gainNode.connect(dest);
             oscillator.start();
-
-            // Setup Recording Container
+            
+            // Bind media stream capturing nodes for recording functionality
             mediaRecorder = new MediaRecorder(dest.stream);
             mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-            mediaRecorder.onstop = exportAudio;
+            mediaRecorder.onstop = saveRecording;
 
-            const targetURL = `http://${ipInput.value.trim()}/json?full=true`;
-            statusDiv.innerText = "Querying phone data stream...";
+            // Corrected native API endpoint configuration
+            const targetURL = `http://${targetIP}/get?pressure`;
+            statusDiv.style.color = "#00ff66";
+            statusDiv.innerText = `Poller initiated. Hooking data pipeline to ${targetURL}...`;
 
-            // Ingestion loop running at 30Hz
-            pollTimer = setInterval(async () => {
+            // Data Ingestion Loop (~30Hz polling intervals)
+            pollingInterval = setInterval(async () => {
                 try {
-                    const res = await fetch(targetURL);
-                    const data = await res.json();
-                    const buffer = data.buffer.pressure.buffer;
-                    const pressure = buffer[buffer.length - 1];
-
-                    if (pressure) {
-                        if (baseline === null) baseline = pressure;
-                        const delta = pressure - baseline;
-                        
-                        telemetry.innerText = `Base: ${baseline.toFixed(2)} hPa | Live: ${pressure.toFixed(3)} hPa`;
-                        
-                        // Sonification calculation: map pressure changes to pitch
-                        const targetFreq = 440 - (delta * 1200);
-                        oscillator.frequency.setTargetAtTime(Math.max(60, Math.min(1600, targetFreq)), audioCtx.currentTime, 0.02);
+                    const response = await fetch(targetURL, { method: 'GET', mode: 'cors' });
+                    if (!response.ok) {
+                        throw new Error(`HTTP Bad Server Status: ${response.status}`);
                     }
+                    const data = await response.json();
+                    
+                    // Step cleanly through the validated JSON hierarchy 
+                    if (!data.buffer || !data.buffer.pressure) {
+                        throw new Error("Connected to phone, but 'Pressure' module isn't active. Open the Pressure experiment in Phyphox.");
+                    }
+
+                    const pressureBuffer = data.buffer.pressure.buffer;
+                    if (pressureBuffer.length === 0) {
+                        statusDiv.style.color = "#ffcc00";
+                        statusDiv.innerText = "Buffer empty. Tap the triangle Play icon inside the phone's Phyphox app to start tracking.";
+                        return;
+                    }
+
+                    // Extract the absolute newest entry from the moving circular array buffer
+                    const pressure = pressureBuffer[pressureBuffer.length - 1];
+                    
+                    // Lock down baseline calibration reference values on first successful array retrieval
+                    if (baseline === null) {
+                        baseline = pressure;
+                    }
+                    
+                    const delta = pressure - baseline;
+                    telemetryDiv.innerText = `Base: ${baseline.toFixed(2)} hPa | Live: ${pressure.toFixed(3)} hPa`;
+                    statusDiv.style.color = "#00ff66";
+                    statusDiv.innerText = `Data feeding smoothly. Stream active.`;
+
+                    // Parameter Modulation calculation
+                    // Lifting the device drops air pressure, causing the tone pitch to slide higher
+                    const targetFreq = 440 - (delta * 1200);
+                    const boundedFreq = Math.max(70, Math.min(1600, targetFreq));
+                    oscillator.frequency.setTargetAtTime(boundedFreq, audioCtx.currentTime, 0.03);
+                    
                 } catch (err) {
-                    statusDiv.innerText = "Connection lost. Verifying network route...";
+                    statusDiv.style.color = "#ff3333";
+                    
+                    // Catch-all browser security alert system
+                    if (window.location.protocol === 'https:') {
+                        statusDiv.innerHTML = `<b>Connection Failed (Mixed Content Block):</b><br>` +
+                            `Your web app is running via an HTTPS server, but your phone is streaming on unsecured HTTP.<br>` +
+                            `Browsers completely block this crossover. To fix this, run this HTML file locally ` +
+                            `on an unencrypted local address like <b>http://localhost</b> or <b>http://127.0.0.1</b>.`;
+                    } else {
+                        statusDiv.innerText = `Network Error: Cannot pull sensor data.\n` +
+                            `1. Verify the IP address matches the screen exactly (check if it uses :8080 instead of :8000).\n` +
+                            `2. Confirm both your phone and PC are sharing the exact same Wi-Fi connection.\n` +
+                            `3. Details: ${err.message}`;
+                    }
                 }
             }, 33);
 
-            connectBtn.innerText = "LINK ACTIVE";
-            connectBtn.style.background = "#222";
-            connectBtn.style.color = "#555";
+            startBtn.innerText = "ENGINE LIVE";
+            startBtn.style.background = "#444";
+            startBtn.style.color = "#888";
             recordBtn.disabled = false;
         });
 
@@ -98,20 +150,22 @@
                 isRecording = true;
                 recordBtn.innerText = "STOP & SAVE";
                 recordBtn.style.background = "#ff3333";
+                recordBtn.style.color = "#fff";
             } else {
                 mediaRecorder.stop();
                 isRecording = false;
-                recordBtn.innerText = "RECORD AUDIO";
+                recordBtn.innerText = "RECORD";
                 recordBtn.style.background = "#fff";
+                recordBtn.style.color = "#000";
             }
         });
 
-        function exportAudio() {
+        function saveRecording() {
             const blob = new Blob(recordedChunks, { type: 'audio/webm' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `baro_session_${Date.now()}.webm`;
+            a.download = `baro_sonifier_capture_${Date.now()}.webm`;
             a.click();
         }
     </script>
