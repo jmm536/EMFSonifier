@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hardware EMF Monitor & Sonifier</title>
+    <title>Induction EMF Monitor & Sonifier</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -66,26 +66,10 @@
             font-size: 1rem;
             cursor: pointer;
             transition: background 0.2s;
-            margin-bottom: 10px;
         }
 
         button:active {
             background-color: #00ccaa;
-        }
-
-        #errorLog {
-            width: 100%;
-            max-width: 500px;
-            background-color: #2a1414;
-            border: 1px solid #662222;
-            color: #ff9999;
-            padding: 15px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            margin-bottom: 15px;
-            display: none;
-            box-sizing: border-box;
-            line-height: 1.4;
         }
 
         .readout {
@@ -94,17 +78,6 @@
             color: #00ffcc;
             margin: 15px 0;
             text-align: center;
-        }
-
-        .axes {
-            display: flex;
-            justify-content: space-between;
-            width: 100%;
-            max-width: 500px;
-            font-family: monospace;
-            font-size: 0.9rem;
-            color: #888;
-            margin-bottom: 10px;
         }
 
         canvas {
@@ -119,59 +92,50 @@
 </head>
 <body>
 
-    <h1>EMF Hardware Monitor</h1>
-
-    <div id="errorLog"></div>
+    <h1>Induction EMF Monitor</h1>
 
     <div class="controls">
-        <button id="startBtn">Start Audio & Sensor</button>
-        <button id="demoBtn" style="background-color: #333; color: #aaa; display: none;">Run Framework Demo Mode</button>
+        <button id="startBtn">Start Audio & Probe</button>
         
         <div class="control-group" style="margin-top: 15px;">
-            <label for="dcOffset">DC Offset Adjustment (µT): <span id="offsetVal">0</span></label>
-            <input type="range" id="dcOffset" min="-150" max="150" value="0" step="1">
+            <label for="dcOffset">Visual Baseline DC Offset: <span id="offsetVal">0</span></label>
+            <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
         </div>
 
         <div class="control-group">
-            <label for="audioGain">Audio Volume</label>
-            <input type="range" id="audioGain" min="0" max="1" value="0.5" step="0.05">
+            <label for="audioGain">Direct Audio Passthrough Volume</label>
+            <input type="range" id="audioGain" min="0" max="1" value="0.0" step="0.05">
+        </div>
+        
+        <div class="control-group">
+            <label for="sonifyPitch">Sonification Pitch Multiplier</label>
+            <input type="range" id="sonifyPitch" min="1" max="10" value="4" step="0.5">
         </div>
     </div>
 
-    <div class="readout"><span id="magDisplay">0.00</span> µT</div>
-    
-    <div class="axes">
-        <span>X: <span id="xDisplay">0</span> µT</span>
-        <span>Y: <span id="yDisplay">0</span> µT</span>
-        <span>Z: <span id="zDisplay">0</span> µT</span>
-    </div>
+    <div class="readout">Relative Field Intensity: <span id="magDisplay">0.0</span></div>
 
     <canvas id="graphCanvas"></canvas>
 
     <script>
-        let sensor = null;
         let audioCtx = null;
+        let sourceNode = null;
+        let analyserNode = null;
         let oscillator = null;
         let gainNode = null;
+        let monitorGainNode = null;
         let isRunning = false;
-        let isDemoMode = false;
-        let demoInterval = null;
-        
+        let streamRef = null;
+
         const startBtn = document.getElementById('startBtn');
-        const demoBtn = document.getElementById('demoBtn');
-        const errorLog = document.getElementById('errorLog');
         const dcOffsetInput = document.getElementById('dcOffset');
         const offsetValDisplay = document.getElementById('offsetVal');
         const audioGainInput = document.getElementById('audioGain');
+        const sonifyPitchInput = document.getElementById('sonifyPitch');
         const magDisplay = document.getElementById('magDisplay');
-        const xDisplay = document.getElementById('xDisplay');
-        const yDisplay = document.getElementById('yDisplay');
-        const zDisplay = document.getElementById('zDisplay');
         
-        // Graphing Setup
         const canvas = document.getElementById('graphCanvas');
         const ctx = canvas.getContext('2d');
-        let dataPoints = new Array(200).fill(0);
 
         function resizeCanvas() {
             canvas.width = canvas.clientWidth;
@@ -180,29 +144,13 @@
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        // Self-test environment constraints immediately on startup
-        window.addEventListener('DOMContentLoaded', () => {
-            if (!('Magnetometer' in window)) {
-                errorLog.style.display = "block";
-                errorLog.innerHTML = `<strong>⚠️ Hardware Sensor API Restrictions Active:</strong><br><br>
-                Your browser is withholding raw magnetometer access. To map direct environmental EMF from a webpage, satisfy these requirements:<br><br>
-                1. <strong>Secure Origin (HTTPS):</strong> This application must run via an <code>https://</code> URL or <code>http://localhost</code>.<br>
-                2. <strong>Enable Browser Flag (Android Chrome):</strong> Open a tab to <code>chrome://flags/#enable-generic-sensor-extra-classes</code>, change it to <strong>Enabled</strong>, and tap <strong>Relaunch</strong>.<br>
-                3. <strong>Hardware Isolation:</strong> Note that iOS Safari blocks raw web-based magnetometers globally. Android Chrome or Chromium-based browsers with the system flag turned on are required.`;
-                
-                // Show fallback demo option so the UI, graphs, and audio synthesis engine can still be tested
-                demoBtn.style.display = "block";
-            }
-        });
-
-        // UI Parameter Adjustments
         dcOffsetInput.addEventListener('input', (e) => {
             offsetValDisplay.textContent = e.target.value;
         });
 
         audioGainInput.addEventListener('input', (e) => {
-            if (gainNode) {
-                gainNode.gain.setValueAtTime(e.target.value, audioCtx.currentTime);
+            if (monitorGainNode) {
+                monitorGainNode.gain.setValueAtTime(e.target.value, audioCtx.currentTime);
             }
         });
 
@@ -211,159 +159,88 @@
                 stopApp();
                 return;
             }
-            await startApp(false);
+            await startApp();
         });
 
-        demoBtn.addEventListener('click', async () => {
-            if (isRunning) {
-                stopApp();
-                return;
-            }
-            await startApp(true);
-        });
-
-        async function initAudio() {
-            if (!audioCtx) {
+        async function startApp() {
+            try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (audioCtx.state === 'suspended') {
-                await audioCtx.resume();
-            }
-
-            oscillator = audioCtx.createOscillator();
-            gainNode = audioCtx.createGain();
-            
-            oscillator.type = 'sine'; 
-            oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); 
-            gainNode.gain.setValueAtTime(audioGainInput.value, audioCtx.currentTime);
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            oscillator.start();
-        }
-
-        async function startApp(useDemo) {
-            await initAudio();
-
-            // Fallback Engine: Evaluates exact UI graph/waveform responsiveness with mock variables 
-            if (useDemo) {
-                isDemoMode = true;
-                isRunning = true;
-                startBtn.disabled = true;
-                demoBtn.textContent = "Stop Demo Mode";
-                demoBtn.style.backgroundColor = "#ff4444";
-                demoBtn.style.color = "#fff";
                 
-                let simulatedBase = 45; // Average baseline microtesla field strength of Earth
-                demoInterval = setInterval(() => {
-                    simulatedBase += (Math.random() - 0.5) * 12;
-                    simulatedBase = Math.max(10, Math.min(180, simulatedBase));
-                    handleEMFData(
-                        simulatedBase * 0.4 + (Math.random() - 0.5) * 4,
-                        simulatedBase * 0.3 + (Math.random() - 0.5) * 4,
-                        simulatedBase * 0.5 + (Math.random() - 0.5) * 4
-                    );
-                }, 50);
-                
-                drawGraph();
-                return;
-            }
-
-            // Real Hardware Engine Route
-            if ('Magnetometer' in window) {
-                try {
-                    if (navigator.permissions) {
-                        const status = await navigator.permissions.query({ name: 'magnetometer' });
-                        if (status.state === 'denied') {
-                            alert('Sensor denied. Check site-specific browser settings.');
-                            stopApp();
-                            return;
-                        }
+                // Disable browser signal processing so it treats raw raw EMF hum as signal, not noise
+                const constraints = {
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
                     }
+                };
 
-                    sensor = new Magnetometer({ frequency: 30 });
-                    
-                    sensor.addEventListener('reading', () => {
-                        handleEMFData(sensor.x, sensor.y, sensor.z);
-                    });
+                streamRef = await navigator.mediaDevices.getUserMedia(constraints);
+                sourceNode = audioCtx.createMediaStreamSource(streamRef);
+                
+                analyserNode = audioCtx.createAnalyser();
+                analyserNode.fftSize = 512;
+                sourceNode.connect(analyserNode);
 
-                    sensor.addEventListener('error', event => {
-                        alert(`Sensor error: ${event.error.message}`);
-                        stopApp();
-                    });
+                // Option A: Direct VLF Audio Monitoring (Listen straight to the raw coil buzz)
+                monitorGainNode = audioCtx.createGain();
+                monitorGainNode.gain.setValueAtTime(audioGainInput.value, audioCtx.currentTime);
+                analyserNode.connect(monitorGainNode);
+                monitorGainNode.connect(audioCtx.destination);
 
-                    sensor.start();
-                    isRunning = true;
-                    demoBtn.disabled = true;
-                    startBtn.textContent = "Stop Audio & Sensor";
-                    startBtn.style.backgroundColor = "#ff4444";
-                    startBtn.style.color = "#fff";
-                    
-                    drawGraph();
-                    
-                } catch (error) {
-                    alert(`Hardware connection failed: ${error.message}`);
-                    stopApp();
-                }
-            } else {
-                alert("Magnetometer unavailable. Please refer to the diagnostic parameters at the top of the screen.");
+                // Option B: Multiplied Pitch Sonification (Converts intensity to a clean synthesized wave)
+                oscillator = audioCtx.createOscillator();
+                gainNode = audioCtx.createGain();
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(150, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.0, audioCtx.currentTime);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.start();
+
+                isRunning = true;
+                startBtn.textContent = "Stop Audio & Probe";
+                startBtn.style.backgroundColor = "#ff4444";
+                startBtn.style.color = "#fff";
+
+                drawGraph();
+
+            } catch (err) {
+                alert(`Audio Probe Connection Failed: ${err.message}\nMake sure microphone permissions are granted.`);
                 stopApp();
             }
         }
 
         function stopApp() {
-            if (sensor) { sensor.stop(); }
-            if (demoInterval) { clearInterval(demoInterval); }
+            isRunning = false;
+            if (streamRef) {
+                streamRef.getTracks().forEach(track => track.stop());
+            }
             if (oscillator) {
                 try { oscillator.stop(); } catch(e) {}
                 oscillator.disconnect();
             }
-            isRunning = false;
-            isDemoMode = false;
-            startBtn.disabled = false;
-            demoBtn.disabled = false;
-            startBtn.textContent = "Start Audio & Sensor";
+            if (sourceNode) sourceNode.disconnect();
+            if (analyserNode) analyserNode.disconnect();
+            if (monitorGainNode) monitorGainNode.disconnect();
+            if (gainNode) gainNode.disconnect();
+            
+            startBtn.textContent = "Start Audio & Probe";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#121212";
-            demoBtn.textContent = "Run Framework Demo Mode";
-            demoBtn.style.backgroundColor = "#333";
-            demoBtn.style.color = "#aaa";
         }
 
-        function handleEMFData(x, y, z) {
-            // True physical magnitude calculation: Vector sum √(x² + y² + z²)
-            const absoluteTesla = Math.sqrt(x * x + y * y + z * z);
-            
-            // Manual baseline adjustment control
-            const dcOffset = parseFloat(dcOffsetInput.value);
-            const adjustedEMF = Math.max(0, absoluteTesla + dcOffset);
-
-            // Print true hardware axes
-            magDisplay.textContent = adjustedEMF.toFixed(2);
-            xDisplay.textContent = x.toFixed(1);
-            yDisplay.textContent = y.toFixed(1);
-            zDisplay.textContent = z.toFixed(1);
-
-            // Buffer rolling timeline array
-            dataPoints.push(adjustedEMF);
-            dataPoints.shift();
-
-            // Real-time audio waveform adjustments
-            if (oscillator && audioCtx) {
-                const targetFrequency = 150 + (adjustedEMF * 4.2);
-                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2200);
-                // setTargetAtTime avoids audio artifacts during micro-fluctuations
-                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
-            }
-        }
-
-        // Rolling Timeline Graph Setup
         function drawGraph() {
             if (!isRunning) return;
 
+            const bufferLength = analyserNode.frequencyBinCount;
+            const dataArray = new Float32Array(bufferLength);
+            analyserNode.getFloatTimeDomainData(dataArray);
+
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Background Grid Guidelines
+
+            // Draw Grids
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 1;
             for(let i = 1; i < 4; i++) {
@@ -374,29 +251,51 @@
                 ctx.stroke();
             }
 
-            // Waveform Trace Configuration
-            ctx.strokeStyle = isDemoMode ? '#ffaa00' : '#00ffcc';
+            // Draw Real-Time Electromagnetic Induction Waveform
+            ctx.strokeStyle = '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
 
-            const sliceWidth = canvas.width / dataPoints.length;
+            const sliceWidth = canvas.width / bufferLength;
             let x = 0;
+            let sumSquares = 0;
 
-            const maxVal = Math.max(...dataPoints, 120); 
+            const dcOffset = parseFloat(dcOffsetInput.value);
 
-            for (let i = 0; i < dataPoints.length; i++) {
-                const yNorm = 1 - (dataPoints[i] / maxVal);
-                const yPos = yNorm * canvas.height;
+            for (let i = 0; i < bufferLength; i++) {
+                const sample = dataArray[i];
+                sumSquares += sample * sample;
+
+                // Adjust baseline using digital DC offset control
+                const normalizedSample = sample + (dcOffset / 100);
+                const yPos = ((normalizedSample + 1) / 2) * canvas.height;
+                const invertedY = canvas.height - yPos;
 
                 if (i === 0) {
-                    ctx.moveTo(x, yPos);
+                    ctx.moveTo(x, invertedY);
                 } else {
-                    ctx.lineTo(x, yPos);
+                    ctx.lineTo(x, invertedY);
                 }
                 x += sliceWidth;
             }
-
             ctx.stroke();
+
+            // Calculate Root Mean Square (RMS) for field intensity rating
+            const rms = Math.sqrt(sumSquares / bufferLength);
+            const intensity = rms * 100;
+            magDisplay.textContent = intensity.toFixed(1);
+
+            // Real-Time Pitch Conversion
+            if (oscillator && audioCtx) {
+                const multiplier = parseFloat(sonifyPitchInput.value);
+                const targetFrequency = 120 + (intensity * multiplier * 18);
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2000);
+                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.02);
+                
+                const targetGain = Math.min(0.4, intensity * 0.15);
+                gainNode.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.02);
+            }
+
             requestAnimationFrame(drawGraph);
         }
     </script>
