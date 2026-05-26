@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EMF Vocal Formant Monitor</title>
+    <title>EMF Gated Vocal Monitor</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -104,23 +104,23 @@
 </head>
 <body>
 
-    <h1>EMF Vocal Analytics</h1>
+    <h1>EMF Gated Vocal Monitor</h1>
     
     <div class="note">
-        <strong>Vocal Synthesis Active:</strong> Keep device stable. Ambient magnetic shifts will manipulate the vocal cords (pitch) and vocal tract resonances (vowel sounds) of the synthesizer.
+        <strong>Gated Audio Engine Live:</strong> The matrix will remain completely silent when the environment is stable. Sound waves will only trigger during active magnetic flux deviations.
     </div>
 
     <div class="panel">
-        <button id="startBtn">Wake Vocal Matrix</button>
+        <button id="startBtn">Arm Vocal Gate</button>
         
         <div class="control-group" style="margin-top: 15px;">
-            <label for="dcOffset">Visual DC Offset: <span id="offsetVal">0</span></label>
+            <label for="dcOffset">Visual Graph DC Offset: <span id="offsetVal">0</span></label>
             <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
         </div>
 
         <div class="control-group">
-            <label for="audioGain">Vocal Master Volume</label>
-            <input type="range" id="audioGain" min="0" max="1" value="0.25" step="0.05">
+            <label for="audioGain">Max Output Vol (On Spike)</label>
+            <input type="range" id="audioGain" min="0" max="1" value="0.4" step="0.05">
         </div>
     </div>
 
@@ -133,7 +133,6 @@
         let masterGain = null;
         let rawVocalCords = null;
         
-        // Formant Filter Array
         let formantF1 = null;
         let formantF2 = null;
         let formantF3 = null;
@@ -163,12 +162,6 @@
             offsetValDisplay.textContent = e.target.value;
         });
 
-        audioGainInput.addEventListener('input', (e) => {
-            if (masterGain && audioCtx) {
-                masterGain.gain.setTargetAtTime(e.target.value, audioCtx.currentTime, 0.01);
-            }
-        });
-
         startBtn.addEventListener('click', async () => {
             if (isRunning) {
                 stopVocalMatrix();
@@ -185,31 +178,30 @@
                 await audioCtx.resume();
             }
 
-            // 1. Establish Glottal Pulse Carrier (Sawtooth replicates rough vocal fold vibration)
             rawVocalCords = audioCtx.createOscillator();
             rawVocalCords.type = 'sawtooth';
-            rawVocalCords.frequency.setValueAtTime(85, audioCtx.currentTime); // Deep male baritone fundamental baseline
+            rawVocalCords.frequency.setValueAtTime(80, audioCtx.currentTime); // Low vocal drone carrier
 
             masterGain = audioCtx.createGain();
-            masterGain.gain.setValueAtTime(parseFloat(audioGainInput.value), audioCtx.currentTime);
+            // Start the application at absolute zero volume
+            masterGain.gain.setValueAtTime(0.0, audioCtx.currentTime);
 
-            // 2. Build Formant Filter Nodes (Parallel bandpass array mimicking human throat/mouth cavities)
+            // Parallel Formant Arrays for vocal tract modeling
             formantF1 = audioCtx.createBiquadFilter();
             formantF1.type = 'bandpass';
-            formantF1.Q.setValueAtTime(25, audioCtx.currentTime); // High selectivity for vowel definition
-            formantF1.frequency.setValueAtTime(600, audioCtx.currentTime); // Fundamental Formant 1 baseline
+            formantF1.Q.setValueAtTime(26, audioCtx.currentTime);
+            formantF1.frequency.setValueAtTime(500, audioCtx.currentTime);
 
             formantF2 = audioCtx.createBiquadFilter();
             formantF2.type = 'bandpass';
             formantF2.Q.setValueAtTime(22, audioCtx.currentTime);
-            formantF2.frequency.setValueAtTime(1400, audioCtx.currentTime); // Formant 2 baseline
+            formantF2.frequency.setValueAtTime(1500, audioCtx.currentTime);
 
             formantF3 = audioCtx.createBiquadFilter();
             formantF3.type = 'bandpass';
-            formantF3.Q.setValueAtTime(15, audioCtx.currentTime);
-            formantF3.frequency.setValueAtTime(2400, audioCtx.currentTime); // Formant 3 stabilization
+            formantF3.Q.setValueAtTime(16, audioCtx.currentTime);
+            formantF3.frequency.setValueAtTime(2500, audioCtx.currentTime);
 
-            // Map parallel voice path connections
             rawVocalCords.connect(formantF1);
             rawVocalCords.connect(formantF2);
             rawVocalCords.connect(formantF3);
@@ -221,7 +213,6 @@
             masterGain.connect(audioCtx.destination);
             rawVocalCords.start();
 
-            // 3. Attach Unlocked Sensor Streams
             if (typeof DeviceOrientationEvent !== 'undefined') {
                 if (typeof DeviceOrientationEvent.requestPermission === 'function') {
                     try {
@@ -238,16 +229,16 @@
         }
 
         function bindSensor() {
-            window.addEventListener(eventName, processVocalFlux, true);
+            window.addEventListener(eventName, processGatedFlux, true);
             isRunning = true;
-            startBtn.textContent = "Silence Vocal Matrix";
+            startBtn.textContent = "Disarm Vocal Gate";
             startBtn.style.backgroundColor = "#ff4444";
             startBtn.style.color = "#fff";
             drawGraph();
         }
 
         function stopVocalMatrix() {
-            window.removeEventListener(eventName, processVocalFlux, true);
+            window.removeEventListener(eventName, processGatedFlux, true);
             if (rawVocalCords) {
                 try { rawVocalCords.stop(); } catch(e) {}
                 rawVocalCords.disconnect();
@@ -257,12 +248,12 @@
             
             isRunning = false;
             lastAlpha = null;
-            startBtn.textContent = "Wake Vocal Matrix";
+            startBtn.textContent = "Arm Vocal Gate";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#121212";
         }
 
-        function processVocalFlux(event) {
+        function processGatedFlux(event) {
             const alpha = event.alpha || 0; 
 
             if (lastAlpha === null) {
@@ -273,7 +264,8 @@
             let deltaAlpha = Math.abs(alpha - lastAlpha);
             if (deltaAlpha > 180) deltaAlpha = 360 - deltaAlpha;
 
-            const fluxIntensity = deltaAlpha * 65.0;
+            // Raw velocity value of the incoming deviation spike
+            const fluxIntensity = deltaAlpha * 75.0;
             const offset = parseFloat(dcOffsetInput.value);
             const adjustedFlux = Math.max(0, fluxIntensity + offset);
 
@@ -281,22 +273,32 @@
             dataPoints.push(adjustedFlux);
             dataPoints.shift();
 
-            // Formant Mapping Engine
-            if (isRunning && rawVocalCords && audioCtx) {
-                // 1. Modulate vocal pitch inflection (fundamental frequency)
-                const basePitch = 75 + (adjustedFlux * 2.2); 
-                const clampedPitch = Math.min(Math.max(basePitch, 45), 400);
-                rawVocalCords.frequency.setTargetAtTime(clampedPitch, audioCtx.currentTime, 0.03);
+            if (isRunning && rawVocalCords && audioCtx && masterGain) {
+                // Hard technical floor to clean out ambient sensor drift jitter
+                const jitterNoiseFloor = 0.15;
+                let calculatedGain = 0;
 
-                // 2. Modulate Vocal Cavity Filters (Shifting vowel shapes dynamically)
-                // Low anomalies yield deep "Ooh/Uhh" phonemes; high spikes morph to "Aah/Eeh" formants
-                const f1Target = 450 + (adjustedFlux * 6.5);
-                const f2Target = 1100 + (adjustedFlux * 14.0);
-                const f3Target = 2200 + (adjustedFlux * 8.0);
+                if (fluxIntensity > jitterNoiseFloor) {
+                    const userMaxVolume = parseFloat(audioGainInput.value);
+                    // Open the audio gate proportionally to the size of the flux burst
+                    calculatedGain = Math.min(userMaxVolume, (fluxIntensity / 8) * userMaxVolume);
+                }
 
-                formantF1.frequency.setTargetAtTime(Math.min(f1Target, 1100), audioCtx.currentTime, 0.04);
-                formantF2.frequency.setTargetAtTime(Math.min(f2Target, 2800), audioCtx.currentTime, 0.04);
-                formantF3.frequency.setTargetAtTime(Math.min(f3Target, 4200), audioCtx.currentTime, 0.05);
+                // Smoothly modulate gain envelope to avoid harsh digital popping noises
+                masterGain.gain.setTargetAtTime(calculatedGain, audioCtx.currentTime, 0.02);
+
+                // Modulate vowel shapes and fundamental pitch lines simultaneously
+                const basePitch = 75 + (adjustedFlux * 2.5);
+                const clampedPitch = Math.min(Math.max(basePitch, 45), 380);
+                rawVocalCords.frequency.setTargetAtTime(clampedPitch, audioCtx.currentTime, 0.02);
+
+                const f1Target = 440 + (adjustedFlux * 7.0);
+                const f2Target = 1100 + (adjustedFlux * 15.0);
+                const f3Target = 2100 + (adjustedFlux * 9.0);
+
+                formantF1.frequency.setTargetAtTime(Math.min(f1Target, 1100), audioCtx.currentTime, 0.03);
+                formantF2.frequency.setTargetAtTime(Math.min(f2Target, 2700), audioCtx.currentTime, 0.03);
+                formantF3.frequency.setTargetAtTime(Math.min(f3Target, 4000), audioCtx.currentTime, 0.04);
             }
 
             lastAlpha = alpha;
