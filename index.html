@@ -3,36 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Baro-Sonifier</title>
+    <title>Network Baro-Sonifier</title>
     <style>
-        body { background: #111; color: #fff; font-family: sans-serif; text-align: center; padding: 20px; }
-        button { background: #fff; color: #000; border: none; padding: 15px 30px; font-size: 16px; margin: 10px; cursor: pointer; border-radius: 4px; }
-        #status { margin-top: 20px; color: #aaa; font-family: monospace; }
+        body { background: #111; color: #fff; font-family: monospace; text-align: center; padding: 30px; }
+        .config-box { background: #222; border: 1px solid #444; padding: 20px; border-radius: 6px; max-width: 400px; margin: 0 auto 20px auto; }
+        input { background: #333; color: #fff; border: 1px solid #555; padding: 10px; font-size: 16px; width: 80%; text-align: center; border-radius: 4px; margin-top: 10px; }
+        button { background: #00ff66; color: #000; border: none; padding: 15px 30px; font-size: 16px; font-weight: bold; margin: 10px; cursor: pointer; border-radius: 4px; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+        #recordBtn { background: #fff; }
+        #status { margin-top: 20px; color: #aaa; font-size: 16px; }
     </style>
 </head>
 <body>
-    <h1>Real-Time Barometric Sonifier</h1>
-    <button id="startBtn">Start Audio</button>
-    <button id="recordBtn" disabled>Record</button>
-    <div id="status">Awaiting engine startup...</div>
+
+    <h1>Barometric Network Sonifier</h1>
+    
+    <div class="config-box">
+        <label for="ipInput">Enter Phyphox Device IP & Port:</label><br>
+        <input type="text" id="ipInput" value="192.168.1.50:8000" placeholder="e.g., 192.168.1.50:8000">
+    </div>
+
+    <button id="startBtn">START AUDIO ENGINE</button>
+    <button id="recordBtn" disabled>RECORD</button>
+    
+    <div id="status">System offline. Input Phyphox link and initialize.</div>
 
     <script>
         let audioCtx, oscillator, gainNode, mediaRecorder;
         let recordedChunks = [];
         let isRecording = false;
         let baseline = null;
+        let pollingInterval = null;
 
         const startBtn = document.getElementById('startBtn');
         const recordBtn = document.getElementById('recordBtn');
         const statusDiv = document.getElementById('status');
+        const ipInput = document.getElementById('ipInput');
 
-        startBtn.addEventListener('click', async () => {
+        startBtn.addEventListener('click', () => {
             if (audioCtx) return;
 
+            const targetIP = ipInput.value.trim();
+            if (!targetIP) {
+                statusDiv.innerText = "Error: Valid Phyphox network IP address required.";
+                return;
+            }
+
+            // Initialize Web Audio API nodes
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
             
+            // Route to media stream destination for local recording capture
             const dest = audioCtx.createMediaStreamDestination();
             oscillator.type = 'sine';
             oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
@@ -42,43 +64,54 @@
             gainNode.connect(dest);
             oscillator.start();
             
+            // Set up recording mechanics
             mediaRecorder = new MediaRecorder(dest.stream);
             mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
             mediaRecorder.onstop = saveRecording;
 
-            if ('Barometer' in window) {
+            const targetURL = `http://${targetIP}/json?full=true`;
+            statusDiv.innerText = "Connecting to Phyphox data stream...";
+
+            // Begin real-time sensor ingestion loop (~30Hz polling frequency)
+            pollingInterval = setInterval(async () => {
                 try {
-                    const permission = await navigator.permissions.query({ name: 'barometer' });
-                    if (permission.state === 'denied') {
-                        statusDiv.innerText = "Error: Barometer permission explicitly blocked.";
+                    const response = await fetch(targetURL, { mode: 'cors' });
+                    const data = await response.json();
+                    
+                    // Parse the absolute latest record entry from the active barometric buffer
+                    const pressureBuffer = data.buffer.pressure.buffer;
+                    const pressure = pressureBuffer[pressureBuffer.length - 1];
+
+                    if (pressure === undefined) {
+                        statusDiv.innerText = "Connected, but streaming buffer is empty. Make sure the Pressure experiment is running in Phyphox.";
                         return;
                     }
-
-                    const sensor = new Barometer({ frequency: 30 });
-                    sensor.addEventListener('reading', () => {
-                        const pressure = sensor.pressure; // Pulls absolute hPa
-                        
-                        if (baseline === null) {
-                            baseline = pressure; // Locks ambient pressure ceiling
-                        }
-                        
-                        const delta = pressure - baseline;
-                        statusDiv.innerText = `Abs: ${pressure.toFixed(3)} hPa | Delta: ${delta.toFixed(3)} hPa`;
-                        
-                        // Map delta values into an audible wave target spectrum
-                        const targetFreq = 440 - (delta * 1000);
-                        oscillator.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.01);
-                    });
                     
-                    sensor.start();
-                    recordBtn.disabled = false;
-                    statusDiv.innerText = "Barometer online. Core calibrated.";
+                    // Establish baseline ceiling on first data return
+                    if (baseline === null) {
+                        baseline = pressure;
+                    }
+                    
+                    const delta = pressure - baseline;
+                    statusDiv.innerText = `Base: ${baseline.toFixed(2)} hPa | Abs: ${pressure.toFixed(3)} hPa | Delta: ${delta.toFixed(3)} hPa`;
+                    
+                    // Map tiny physical pressure changes to audible audio slides
+                    // Raising the phone decreases air pressure, which raises the frequency pitch
+                    const targetFreq = 440 - (delta * 1200);
+                    
+                    // Constrain frequency to stable ranges (80Hz - 1500Hz)
+                    const boundedFreq = Math.max(80, Math.min(1500, targetFreq));
+                    oscillator.frequency.setTargetAtTime(boundedFreq, audioCtx.currentTime, 0.02);
+                    
                 } catch (err) {
-                    statusDiv.innerText = `Hardware Link Failed: ${err.message}`;
+                    statusDiv.innerText = `Network Error: Failed to fetch data. Check your IP address and network link.`;
                 }
-            } else {
-                statusDiv.innerText = "Barometer API unsupported. Check secure context (HTTPS) or Chrome Flags.";
-            }
+            }, 33);
+
+            startBtn.innerText = "ENGINE LIVE";
+            startBtn.style.background = "#444";
+            startBtn.style.color = "#888";
+            recordBtn.disabled = false;
         });
 
         recordBtn.addEventListener('click', () => {
@@ -86,13 +119,15 @@
                 recordedChunks = [];
                 mediaRecorder.start();
                 isRecording = true;
-                recordBtn.innerText = "Stop & Save WebM";
+                recordBtn.innerText = "STOP & SAVE";
                 recordBtn.style.background = "#ff3333";
+                recordBtn.style.color = "#fff";
             } else {
                 mediaRecorder.stop();
                 isRecording = false;
-                recordBtn.innerText = "Record";
+                recordBtn.innerText = "RECORD";
                 recordBtn.style.background = "#fff";
+                recordBtn.style.color = "#000";
             }
         });
 
@@ -101,7 +136,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `baro_capture_${Date.now()}.webm`;
+            a.download = `baro_data_capture_${Date.now()}.webm`;
             a.click();
         }
     </script>
