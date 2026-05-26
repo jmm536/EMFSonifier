@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time EMF Monitor & Sonifier</title>
+    <title>Hardware EMF Monitor & Sonifier</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -45,7 +45,7 @@
             color: #aaa;
         }
 
-        input[type="range"], input[type="number"] {
+        input[type="range"] {
             width: 100%;
             background: #333;
             color: #fff;
@@ -103,14 +103,14 @@
 </head>
 <body>
 
-    <h1>EMF Real-Time Monitor</h1>
+    <h1>EMF Hardware Monitor</h1>
 
     <div class="controls">
         <button id="startBtn">Start Audio & Sensor</button>
         
         <div class="control-group" style="margin-top: 15px;">
             <label for="dcOffset">DC Offset Adjustment (µT): <span id="offsetVal">0</span></label>
-            <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
+            <input type="range" id="dcOffset" min="-150" max="150" value="0" step="1">
         </div>
 
         <div class="control-group">
@@ -122,23 +122,20 @@
     <div class="readout"><span id="magDisplay">0.00</span> µT</div>
     
     <div class="axes">
-        <span>X: <span id="xDisplay">0</span></span>
-        <span>Y: <span id="yDisplay">0</span></span>
-        <span>Z: <span id="zDisplay">0</span></span>
+        <span>X: <span id="xDisplay">0</span> µT</span>
+        <span>Y: <span id="yDisplay">0 µT</span></span>
+        <span>Z: <span id="zDisplay">0 µT</span></span>
     </div>
 
     <canvas id="graphCanvas"></canvas>
 
     <script>
+        let sensor = null;
         let audioCtx = null;
         let oscillator = null;
         let gainNode = null;
         let isRunning = false;
         
-        // Sensor tracking states
-        let lastAlpha = null, lastBeta = null, lastGamma = null;
-        const eventName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
-
         const startBtn = document.getElementById('startBtn');
         const dcOffsetInput = document.getElementById('dcOffset');
         const offsetValDisplay = document.getElementById('offsetVal');
@@ -151,7 +148,7 @@
         // Graphing Setup
         const canvas = document.getElementById('graphCanvas');
         const ctx = canvas.getContext('2d');
-        let dataPoints = new Array(200).fill(45); // Earth average baseline ambient microtesla
+        let dataPoints = new Array(200).fill(0);
 
         function resizeCanvas() {
             canvas.width = canvas.clientWidth;
@@ -188,7 +185,6 @@
                 await audioCtx.resume();
             }
 
-            // Setup continuous audio waveform node
             oscillator = audioCtx.createOscillator();
             gainNode = audioCtx.createGain();
             
@@ -200,115 +196,100 @@
             gainNode.connect(audioCtx.destination);
             oscillator.start();
 
-            // 2. Initialize iOS / Android Orientation Sensor Access
-            if (typeof DeviceOrientationEvent !== 'undefined') {
-                // Check if device requires a modern explicit permission handshake (like iOS)
-                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-                    try {
-                        const permissionState = await DeviceOrientationEvent.requestPermission();
-                        if (permissionState === 'granted') {
-                            bindSensorStream();
-                        } else {
-                            alert('Permission to access device orientation sensors was denied.');
+            // 2. Access True Hardware Magnetometer
+            if ('Magnetometer' in window) {
+                try {
+                    // Query Permissions API explicitly if the browser supports it for sensors
+                    if (navigator.permissions) {
+                        const status = await navigator.permissions.query({ name: 'magnetometer' });
+                        if (status.state === 'denied') {
+                            alert('Permission to access the hardware magnetometer was denied.');
                             stopApp();
+                            return;
                         }
-                    } catch (error) {
-                        alert(`Sensor Request Error: ${error.message}`);
-                        stopApp();
                     }
-                } else {
-                    // Standard Android / Desktop initialization
-                    bindSensorStream();
+
+                    // Request uncalibrated/raw data stream at 20Hz
+                    sensor = new Magnetometer({ frequency: 20 });
+                    
+                    sensor.addEventListener('reading', () => {
+                        // Pass real microtesla hardware values directly
+                        handleEMFData(sensor.x, sensor.y, sensor.z);
+                    });
+
+                    sensor.addEventListener('error', event => {
+                        alert(`Sensor hardware error: ${event.error.message}`);
+                        stopApp();
+                    });
+
+                    sensor.start();
+                    isRunning = true;
+                    startBtn.textContent = "Stop Audio & Sensor";
+                    startBtn.style.backgroundColor = "#ff4444";
+                    startBtn.style.color = "#fff";
+                    
+                    drawGraph();
+                    
+                } catch (error) {
+                    alert(`Could not initiate sensor: ${error.message}`);
+                    stopApp();
                 }
             } else {
-                alert("Orientation and compass sensor arrays are not supported by this browser.");
+                alert("Magnetometer API is missing. To fix this:\n1. Use Android Chrome on HTTPS.\n2. Go to chrome://flags\n3. Enable 'Generic Sensor Extra Classes'\n4. Relaunch Chrome.");
                 stopApp();
             }
         }
 
-        function bindSensorStream() {
-            window.addEventListener(eventName, handleSensorData, true);
-            isRunning = true;
-            startBtn.textContent = "Stop Audio & Sensor";
-            startBtn.style.backgroundColor = "#ff4444";
-            startBtn.style.color = "#fff";
-            
-            // Initiate graphing frame loops
-            drawGraph();
-        }
-
         function stopApp() {
-            window.removeEventListener(eventName, handleSensorData, true);
+            if (sensor) {
+                sensor.stop();
+            }
             if (oscillator) {
                 try { oscillator.stop(); } catch(e) {}
                 oscillator.disconnect();
             }
             isRunning = false;
-            lastAlpha = null;
             startBtn.textContent = "Start Audio & Sensor";
             startBtn.style.backgroundColor = "#00ffcc";
             startBtn.style.color = "#121212";
         }
 
-        function handleSensorData(event) {
-            const alpha = event.alpha || 0; // Compass heading Z
-            const beta = event.beta || 0;   // Tilt X
-            const gamma = event.gamma || 0; // Tilt Y
-
-            if (lastAlpha === null) {
-                lastAlpha = alpha; lastBeta = beta; lastGamma = gamma;
-                return;
-            }
-
-            // Calculate rotational velocity/flux. 
-            // Shortest path logic handles the 0-360 degree radial wrap correctly.
-            let dAlpha = alpha - lastAlpha;
-            if (dAlpha > 180) dAlpha -= 360;
-            if (dAlpha < -180) dAlpha += 360;
-
-            let dBeta = beta - lastBeta;
-            let dGamma = gamma - lastGamma;
-
-            // Compute magnetic deviation vector shifts
-            const magneticFlux = Math.sqrt(dAlpha * dAlpha + dBeta * dBeta + dGamma * dGamma);
-
-            // Establish standard terrestrial microtesla base (~45 µT) amplified by hardware flux shifts
-            const baseEMF = 45.0 + (magneticFlux * 12.0);
+        function handleEMFData(x, y, z) {
+            // Compute real physical magnetic magnitude: Vector sum of X, Y, Z coordinates
+            const absoluteTesla = Math.sqrt(x * x + y * y + z * z);
             
-            // Apply real-time DC Offset controls
+            // Apply Manual DC Offset
             const dcOffset = parseFloat(dcOffsetInput.value);
-            const adjustedMagnitude = Math.max(0, baseEMF + dcOffset);
+            const adjustedEMF = Math.max(0, absoluteTesla + dcOffset);
 
-            // Populate the UI text elements
-            magDisplay.textContent = adjustedMagnitude.toFixed(2);
-            xDisplay.textContent = (gamma * 0.4).toFixed(1);
-            yDisplay.textContent = (beta * 0.4).toFixed(1);
-            zDisplay.textContent = (alpha * 0.2).toFixed(1);
+            // Print the authentic sensor metrics
+            magDisplay.textContent = adjustedEMF.toFixed(2);
+            xDisplay.textContent = x.toFixed(1);
+            yDisplay.textContent = y.toFixed(1);
+            zDisplay.textContent = z.toFixed(1);
 
-            // Buffer dataset for the canvas control graph
-            dataPoints.push(adjustedMagnitude);
+            // Feed raw values to sliding graph control
+            dataPoints.push(adjustedEMF);
             dataPoints.shift();
 
-            // Real-Time Waveform generation mapping
+            // Real-Time Waveform Conversion
             if (oscillator && audioCtx) {
-                const targetFrequency = 120 + (adjustedMagnitude * 4.5);
-                const clampedFrequency = Math.min(Math.max(targetFrequency, 30), 2500);
-                // setTargetAtTime smooths out parameter modulation to prevent clicking artifacts
-                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.04);
+                // Base 150Hz tone, pitch shifts dynamically by 4Hz per Microtesla variation
+                const targetFrequency = 150 + (adjustedEMF * 4);
+                const clampedFrequency = Math.min(Math.max(targetFrequency, 40), 2000);
+                
+                // Audio parameter smoothing to translate spikes into smooth waveform tones
+                oscillator.frequency.setTargetAtTime(clampedFrequency, audioCtx.currentTime, 0.03);
             }
-
-            lastAlpha = alpha;
-            lastBeta = beta;
-            lastGamma = gamma;
         }
 
-        // Real-Time Graph Control Loop
+        // Live Graphic Control Canvas Render
         function drawGraph() {
             if (!isRunning) return;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Draw baseline guides
+            // Grid guides
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 1;
             for(let i = 1; i < 4; i++) {
@@ -319,7 +300,7 @@
                 ctx.stroke();
             }
 
-            // Draw Dynamic EMF Trendline
+            // Trendline tracing absolute hardware EMF data
             ctx.strokeStyle = '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -327,7 +308,8 @@
             const sliceWidth = canvas.width / dataPoints.length;
             let x = 0;
 
-            const maxVal = Math.max(...dataPoints, 120); 
+            // Auto-scaling limit to prevent data clipping out of frame
+            const maxVal = Math.max(...dataPoints, 100); 
 
             for (let i = 0; i < dataPoints.length; i++) {
                 const yNorm = 1 - (dataPoints[i] / maxVal);
@@ -338,7 +320,6 @@
                 } else {
                     ctx.lineTo(x, yPos);
                 }
-
                 x += sliceWidth;
             }
 
