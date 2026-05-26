@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EMF Gated Vocal Monitor</title>
+    <title>EMF Anomaly Detection Matrix</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: #121212;
-            color: #e0e0e0;
+            background-color: #0a0a0a;
+            color: #d0d0d0;
             margin: 0;
-            padding: 20px;
+            padding: 15px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -18,134 +18,187 @@
 
         h1 {
             color: #00ffcc;
-            font-size: 1.4rem;
-            margin-bottom: 10px;
+            font-size: 1.3rem;
+            margin: 10px 0;
             text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: 2px;
+        }
+
+        .grid-container {
+            width: 100%;
+            max-width: 500px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .panel {
-            background-color: #1e1e1e;
-            padding: 20px;
-            border-radius: 8px;
-            width: 100%;
-            max-width: 500px;
+            background-color: #121212;
+            border: 1px solid #222;
+            border-radius: 6px;
+            padding: 15px;
             box-sizing: border-box;
-            margin-bottom: 15px;
-            border: 1px solid #333;
+        }
+
+        .indicator-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #161616;
+            padding: 10px 15px;
+            border-radius: 4px;
+            border: 1px solid #222;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            background-color: #333;
+            border-radius: 50%;
+            display: inline-block;
+            transition: background-color 0.2s;
         }
 
         .control-group {
-            margin-bottom: 15px;
+            margin-top: 12px;
             display: flex;
             flex-direction: column;
         }
 
         label {
-            font-size: 0.85rem;
-            margin-bottom: 5px;
-            color: #aaa;
+            font-size: 0.75rem;
+            color: #888;
             text-transform: uppercase;
+            margin-bottom: 4px;
+            letter-spacing: 1px;
         }
 
         input[type="range"] {
             width: 100%;
-            background: #333;
-            color: #fff;
-            border: 1px solid #444;
-            padding: 8px;
-            border-radius: 4px;
-            box-sizing: border-box;
+            background: #222;
+            accent-color: #00ffcc;
+            height: 6px;
+            border-radius: 3px;
+            outline: none;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 10px;
         }
 
         button {
-            width: 100%;
-            padding: 14px;
-            background-color: #00ffcc;
-            color: #121212;
+            flex: 1;
+            padding: 12px;
             border: none;
             border-radius: 4px;
             font-weight: bold;
-            font-size: 1rem;
+            font-size: 0.9rem;
             cursor: pointer;
+            text-transform: uppercase;
+            transition: background 0.2s;
         }
 
-        button:active {
-            background-color: #00ccaa;
-        }
+        #startBtn { background-color: #00ffcc; color: #0a0a0a; }
+        #calBtn { background-color: #222; color: #00ffcc; border: 1px solid #333; }
+        button:disabled { background-color: #111 !important; color: #444 !important; border: 1px solid #222 !important; cursor: not-allowed; }
 
         .readout {
-            font-size: 2.2rem;
+            font-size: 2.4rem;
             font-family: monospace;
             color: #00ffcc;
-            margin: 15px 0;
             text-align: center;
             font-weight: bold;
-        }
-
-        .note {
-            font-size: 0.85rem;
-            color: #888;
-            text-align: center;
-            max-width: 500px;
-            margin-bottom: 15px;
-            line-height: 1.4;
+            padding: 10px 0;
         }
 
         canvas {
-            background-color: #050505;
-            border: 1px solid #222;
-            border-radius: 8px;
+            background-color: #020202;
+            border: 1px solid #1a1a1a;
+            border-radius: 6px;
             width: 100%;
-            max-width: 500px;
-            height: 220px;
+            height: 180px;
         }
+
+        .log-panel {
+            background-color: #0c0c0c;
+            border: 1px solid #1a1a1a;
+            border-radius: 4px;
+            height: 110px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.75rem;
+            padding: 8px;
+            box-sizing: border-box;
+            color: #aaa;
+        }
+
+        .log-entry { margin-bottom: 4px; border-left: 2px solid #00ffcc; padding-left: 6px; }
+        .log-entry.alert { border-left-color: #ff4444; color: #ff9999; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h1>EMF Gated Vocal Monitor</h1>
-    
-    <div class="note">
-        <strong>Gated Audio Engine Live:</strong> The matrix will remain completely silent when the environment is stable. Sound waves will only trigger during active magnetic flux deviations.
-    </div>
+    <h1>Anomaly Detection Matrix</h1>
 
-    <div class="panel">
-        <button id="startBtn">Arm Vocal Gate</button>
+    <div class="grid-container">
         
-        <div class="control-group" style="margin-top: 15px;">
-            <label for="dcOffset">Visual Graph DC Offset: <span id="offsetVal">0</span></label>
-            <input type="range" id="dcOffset" min="-100" max="100" value="0" step="1">
+        <div class="indicator-bar">
+            <span id="statusTxt" style="font-size: 0.85rem; font-weight: bold; color: #aaa;">SYSTEM UNARMED</span>
+            <div id="statusDot" class="status-dot"></div>
         </div>
 
-        <div class="control-group">
-            <label for="audioGain">Max Output Vol (On Spike)</label>
-            <input type="range" id="audioGain" min="0" max="1" value="0.4" step="0.05">
+        <div class="panel">
+            <div class="btn-row">
+                <button id="startBtn">Arm System</button>
+                <button id="calBtn" disabled>Zero Baseline</button>
+            </div>
+
+            <div class="control-group">
+                <label for="threshold">Anomaly Sensitivity Threshold: <span id="threshVal">1.5</span>°</label>
+                <input type="range" id="threshold" min="0.2" max="5.0" value="1.5" step="0.1">
+            </div>
+
+            <div class="control-group">
+                <label for="audioGain">Voice Engine Max Volume</label>
+                <input type="range" id="audioGain" min="0" max="1" value="0.3" step="0.05">
+            </div>
         </div>
+
+        <div class="readout"><span id="magDisplay">0.00</span>°</div>
+
+        <canvas id="graphCanvas"></canvas>
+
+        <div class="panel" style="padding: 10px;">
+            <label style="margin-bottom: 6px; display: block;">Real-Time Operation Log</label>
+            <div id="logPanel" class="log-panel">
+                <div class="log-entry">System standing by. Secure HTTPS deployment verified.</div>
+            </div>
+        </div>
+
     </div>
-
-    <div class="readout"><span id="magDisplay">0.00</span> <span style="font-size: 1.2rem;">Δ Flux</span></div>
-
-    <canvas id="graphCanvas"></canvas>
 
     <script>
         let audioCtx = null;
         let masterGain = null;
-        let rawVocalCords = null;
-        
-        let formantF1 = null;
-        let formantF2 = null;
-        let formantF3 = null;
-        
+        let vocalCords = null;
+        let formantF1 = null, formantF2 = null;
+
         let isRunning = false;
+        let calibratedAlpha = null;
         let lastAlpha = null;
+        
         const eventName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
 
         const startBtn = document.getElementById('startBtn');
-        const dcOffsetInput = document.getElementById('dcOffset');
-        const offsetValDisplay = document.getElementById('offsetVal');
+        const calBtn = document.getElementById('calBtn');
+        const statusTxt = document.getElementById('statusTxt');
+        const statusDot = document.getElementById('statusDot');
+        const thresholdInput = document.getElementById('threshold');
+        const threshVal = document.getElementById('threshVal');
         const audioGainInput = document.getElementById('audioGain');
         const magDisplay = document.getElementById('magDisplay');
+        const logPanel = document.getElementById('logPanel');
         
         const canvas = document.getElementById('graphCanvas');
         const ctx = canvas.getContext('2d');
@@ -158,173 +211,204 @@
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        dcOffsetInput.addEventListener('input', (e) => {
-            offsetValDisplay.textContent = e.target.value;
-        });
+        thresholdInput.addEventListener('input', (e) => { threshVal.textContent = e.target.value; });
 
         startBtn.addEventListener('click', async () => {
-            if (isRunning) {
-                stopVocalMatrix();
-                return;
-            }
-            await startVocalMatrix();
+            if (isRunning) { stopMatrix(); return; }
+            await startMatrix();
         });
 
-        async function startVocalMatrix() {
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (audioCtx.state === 'suspended') {
-                await audioCtx.resume();
-            }
+        calBtn.addEventListener('click', () => { if (lastAlpha !== null) calibrateBaseline(lastAlpha); });
 
-            rawVocalCords = audioCtx.createOscillator();
-            rawVocalCords.type = 'sawtooth';
-            rawVocalCords.frequency.setValueAtTime(80, audioCtx.currentTime); // Low vocal drone carrier
+        function logEvent(text, isAlert = false) {
+            const timeStr = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = isAlert ? "log-entry alert" : "log-entry";
+            entry.innerHTML = `[${timeStr}] ${text}`;
+            logPanel.appendChild(entry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+        }
 
-            masterGain = audioCtx.createGain();
-            // Start the application at absolute zero volume
-            masterGain.gain.setValueAtTime(0.0, audioCtx.currentTime);
+        async function startMatrix() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-            // Parallel Formant Arrays for vocal tract modeling
-            formantF1 = audioCtx.createBiquadFilter();
-            formantF1.type = 'bandpass';
-            formantF1.Q.setValueAtTime(26, audioCtx.currentTime);
-            formantF1.frequency.setValueAtTime(500, audioCtx.currentTime);
+                // Build Vocal Formant Engine
+                vocalCords = audioCtx.createOscillator();
+                vocalCords.type = 'sawtooth';
+                vocalCords.frequency.setValueAtTime(80, audioCtx.currentTime); 
 
-            formantF2 = audioCtx.createBiquadFilter();
-            formantF2.type = 'bandpass';
-            formantF2.Q.setValueAtTime(22, audioCtx.currentTime);
-            formantF2.frequency.setValueAtTime(1500, audioCtx.currentTime);
+                masterGain = audioCtx.createGain();
+                masterGain.gain.setValueAtTime(0.0, audioCtx.currentTime);
 
-            formantF3 = audioCtx.createBiquadFilter();
-            formantF3.type = 'bandpass';
-            formantF3.Q.setValueAtTime(16, audioCtx.currentTime);
-            formantF3.frequency.setValueAtTime(2500, audioCtx.currentTime);
+                formantF1 = audioCtx.createBiquadFilter();
+                formantF1.type = 'bandpass';
+                formantF1.Q.setValueAtTime(25, audioCtx.currentTime);
+                formantF1.frequency.setValueAtTime(500, audioCtx.currentTime);
 
-            rawVocalCords.connect(formantF1);
-            rawVocalCords.connect(formantF2);
-            rawVocalCords.connect(formantF3);
+                formantF2 = audioCtx.createBiquadFilter();
+                formantF2.type = 'bandpass';
+                formantF2.Q.setValueAtTime(20, audioCtx.currentTime);
+                formantF2.frequency.setValueAtTime(1500, audioCtx.currentTime);
 
-            formantF1.connect(masterGain);
-            formantF2.connect(masterGain);
-            formantF3.connect(masterGain);
+                vocalCords.connect(formantF1);
+                vocalCords.connect(formantF2);
+                formantF1.connect(masterGain);
+                formantF2.connect(masterGain);
+                masterGain.connect(audioCtx.destination);
+                
+                vocalCords.start();
 
-            masterGain.connect(audioCtx.destination);
-            rawVocalCords.start();
-
-            if (typeof DeviceOrientationEvent !== 'undefined') {
-                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-                    try {
+                // Connect Device Orientation Engine
+                if (typeof DeviceOrientationEvent !== 'undefined') {
+                    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
                         const state = await DeviceOrientationEvent.requestPermission();
-                        if (state === 'granted') bindSensor(); else stopVocalMatrix();
-                    } catch (err) {
-                        alert(err.message);
-                        stopVocalMatrix();
+                        if (state === 'granted') mountSensor(); else throw new Error("Permission Denied");
+                    } else {
+                        mountSensor();
                     }
                 } else {
-                    bindSensor();
+                    throw new Error("Orientation APIs unsupported on this browser.");
                 }
+            } catch (err) {
+                logEvent(`Initialization Aborted: ${err.message}`, true);
+                stopMatrix();
             }
         }
 
-        function bindSensor() {
-            window.addEventListener(eventName, processGatedFlux, true);
+        function mountSensor() {
+            window.addEventListener(eventName, processTelemetry, true);
             isRunning = true;
-            startBtn.textContent = "Disarm Vocal Gate";
+            startBtn.textContent = "Halt System";
             startBtn.style.backgroundColor = "#ff4444";
             startBtn.style.color = "#fff";
+            calBtn.disabled = false;
+            
+            statusTxt.textContent = "CALIBRATING FIELD...";
+            statusTxt.style.color = "#ffaa00";
+            statusDot.style.backgroundColor = "#ffaa00";
+            
+            logEvent("Telemetry lines mounted. Calculating background ambient variables...");
             drawGraph();
         }
 
-        function stopVocalMatrix() {
-            window.removeEventListener(eventName, processGatedFlux, true);
-            if (rawVocalCords) {
-                try { rawVocalCords.stop(); } catch(e) {}
-                rawVocalCords.disconnect();
-            }
-            if (formantF1) { formantF1.disconnect(); formantF2.disconnect(); formantF3.disconnect(); }
-            if (masterGain) masterGain.disconnect();
-            
-            isRunning = false;
-            lastAlpha = null;
-            startBtn.textContent = "Arm Vocal Gate";
-            startBtn.style.backgroundColor = "#00ffcc";
-            startBtn.style.color = "#121212";
+        function calibrateBaseline(baseAngle) {
+            calibratedAlpha = baseAngle;
+            statusTxt.textContent = "SYSTEM ARMED & STABLE";
+            statusTxt.style.color = "#00ffcc";
+            statusDot.style.backgroundColor = "#00ffcc";
+            logEvent(`Ambient matrix zeroed. Baseline compass angle locked at ${baseAngle.toFixed(1)}°`);
         }
 
-        function processGatedFlux(event) {
-            const alpha = event.alpha || 0; 
+        function stopMatrix() {
+            window.removeEventListener(eventName, processTelemetry, true);
+            if (vocalCords) { try { vocalCords.stop(); } catch(e) {} vocalCords.disconnect(); }
+            if (formantF1) { formantF1.disconnect(); formantF2.disconnect(); }
+            if (masterGain) masterGain.disconnect();
 
-            if (lastAlpha === null) {
-                lastAlpha = alpha;
+            isRunning = false;
+            calibratedAlpha = null;
+            lastAlpha = null;
+            
+            startBtn.textContent = "Arm System";
+            startBtn.style.backgroundColor = "#00ffcc";
+            startBtn.style.color = "#0a0a0a";
+            calBtn.disabled = true;
+            
+            statusTxt.textContent = "SYSTEM UNARMED";
+            statusTxt.style.color = "#aaa";
+            statusDot.style.backgroundColor = "#333";
+            
+            logEvent("Telemetry links severed. Voice synth offline.");
+        }
+
+        function processTelemetry(event) {
+            const alpha = event.alpha || 0;
+            lastAlpha = alpha;
+
+            // Handle immediate initialization calibration sequence
+            if (calibratedAlpha === null) {
+                calibrateBaseline(alpha);
                 return;
             }
 
-            let deltaAlpha = Math.abs(alpha - lastAlpha);
-            if (deltaAlpha > 180) deltaAlpha = 360 - deltaAlpha;
+            // Calculate exact angular tracking deviation from the zeroed baseline
+            let deviation = Math.abs(alpha - calibratedAlpha);
+            if (deviation > 180) deviation = 360 - deviation;
 
-            // Raw velocity value of the incoming deviation spike
-            const fluxIntensity = deltaAlpha * 75.0;
-            const offset = parseFloat(dcOffsetInput.value);
-            const adjustedFlux = Math.max(0, fluxIntensity + offset);
-
-            magDisplay.textContent = adjustedFlux.toFixed(2);
-            dataPoints.push(adjustedFlux);
+            magDisplay.textContent = deviation.toFixed(2);
+            dataPoints.push(deviation);
             dataPoints.shift();
 
-            if (isRunning && rawVocalCords && audioCtx && masterGain) {
-                // Hard technical floor to clean out ambient sensor drift jitter
-                const jitterNoiseFloor = 0.15;
-                let calculatedGain = 0;
+            if (isRunning && vocalCords && masterGain) {
+                const threshold = parseFloat(thresholdInput.value);
+                let targetGain = 0;
 
-                if (fluxIntensity > jitterNoiseFloor) {
-                    const userMaxVolume = parseFloat(audioGainInput.value);
-                    // Open the audio gate proportionally to the size of the flux burst
-                    calculatedGain = Math.min(userMaxVolume, (fluxIntensity / 8) * userMaxVolume);
+                if (deviation > threshold) {
+                    // Anomaly condition triggered
+                    statusTxt.textContent = "ANOMALY DETECTED";
+                    statusTxt.style.color = "#ff4444";
+                    statusDot.style.backgroundColor = "#ff4444";
+                    
+                    const maxVol = parseFloat(audioGainInput.value);
+                    // Scale voice volume relative to anomaly intensity
+                    targetGain = Math.min(maxVol, ((deviation - threshold) / 3) * maxVol);
+                    
+                    // Throttle logs so we only log the initial break through the threshold
+                    if (masterGain.gain.value === 0) {
+                        logEvent(`EMF Variance Limit Breached! Flux: +${deviation.toFixed(2)}°`, true);
+                    }
+
+                    // Shift vowel formant tracks dynamically based on anomaly intensity
+                    const pitchBase = 75 + (deviation * 4);
+                    vocalCords.frequency.setTargetAtTime(Math.min(pitchBase, 350), audioCtx.currentTime, 0.02);
+
+                    const f1 = 450 + (deviation * 15);
+                    const f2 = 1100 + (deviation * 30);
+                    formantF1.frequency.setTargetAtTime(Math.min(f1, 1200), audioCtx.currentTime, 0.03);
+                    formantF2.frequency.setTargetAtTime(Math.min(f2, 2800), audioCtx.currentTime, 0.03);
+
+                } else {
+                    // Return to normal structural baseline parameters
+                    if (statusTxt.textContent === "ANOMALY DETECTED") {
+                        statusTxt.textContent = "SYSTEM ARMED & STABLE";
+                        statusTxt.style.color = "#00ffcc";
+                        statusDot.style.backgroundColor = "#00ffcc";
+                    }
+                    targetGain = 0;
                 }
 
-                // Smoothly modulate gain envelope to avoid harsh digital popping noises
-                masterGain.gain.setTargetAtTime(calculatedGain, audioCtx.currentTime, 0.02);
-
-                // Modulate vowel shapes and fundamental pitch lines simultaneously
-                const basePitch = 75 + (adjustedFlux * 2.5);
-                const clampedPitch = Math.min(Math.max(basePitch, 45), 380);
-                rawVocalCords.frequency.setTargetAtTime(clampedPitch, audioCtx.currentTime, 0.02);
-
-                const f1Target = 440 + (adjustedFlux * 7.0);
-                const f2Target = 1100 + (adjustedFlux * 15.0);
-                const f3Target = 2100 + (adjustedFlux * 9.0);
-
-                formantF1.frequency.setTargetAtTime(Math.min(f1Target, 1100), audioCtx.currentTime, 0.03);
-                formantF2.frequency.setTargetAtTime(Math.min(f2Target, 2700), audioCtx.currentTime, 0.03);
-                formantF3.frequency.setTargetAtTime(Math.min(f3Target, 4000), audioCtx.currentTime, 0.04);
+                masterGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.03);
             }
-
-            lastAlpha = alpha;
         }
 
         function drawGraph() {
             if (!isRunning) return;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = '#181818';
+            
+            // Draw Threshold Limit Line
+            const threshold = parseFloat(thresholdInput.value);
+            const maxGraphVal = Math.max(...dataPoints, 6);
+            const threshY = canvas.height - ((threshold / maxGraphVal) * canvas.height);
+            
+            ctx.strokeStyle = 'rgba(255, 68, 68, 0.3)';
             ctx.lineWidth = 1;
-            for(let i = 1; i < 5; i++) {
-                let y = (canvas.height / 5) * i;
-                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-            }
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(0, threshY); ctx.lineTo(canvas.width, threshY); ctx.stroke();
+            ctx.setLineDash([]); // Reset
 
-            ctx.strokeStyle = '#00ffcc';
+            // Plot Telemetry Trace
+            ctx.strokeStyle = (statusTxt.textContent === "ANOMALY DETECTED") ? '#ff4444' : '#00ffcc';
             ctx.lineWidth = 2;
             ctx.beginPath();
 
             const sliceWidth = canvas.width / dataPoints.length;
             let x = 0;
-            const maxVal = Math.max(...dataPoints, 60); 
 
             for (let i = 0; i < dataPoints.length; i++) {
-                const yNorm = 1 - (dataPoints[i] / maxVal);
+                const yNorm = 1 - (dataPoints[i] / maxGraphVal);
                 const yPos = yNorm * canvas.height;
                 if (i === 0) ctx.moveTo(x, yPos); else ctx.lineTo(x, yPos);
                 x += sliceWidth;
